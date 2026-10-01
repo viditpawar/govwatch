@@ -58,7 +58,8 @@ groups:
           runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchworkerdown
 
       - alert: GovwatchWorkerStalled
-        expr: time() - govwatch_worker_heartbeat_timestamp_seconds > 3600
+        # job-scoped: only the worker exports this gauge, but say so explicitly
+        expr: time() - govwatch_worker_heartbeat_timestamp_seconds{job="govwatch"} > 3600
         for: 5m
         labels:
           severity: critical
@@ -177,3 +178,115 @@ groups:
         annotations:
           summary: "{{ $labels.source }} returned records that couldn't be parsed"
           runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchmalformedrecords
+
+  # --- phase 2: the summarization agent and the human review step ---------------------
+  #
+  # Quality signals come from the database (agent/quality.py) as a "recent" (last 7 days)
+  # and a "baseline" (the 30 days before) window. Drift alerts compare the two and need at
+  # least 30 summaries in each, so a quiet week can't trip them on a handful of bills.
+  # Thresholds are set from the first live batches (decisions.md #50) and are meant to be
+  # re-tuned once there's a month of history.
+
+  - name: govwatch.agent.recording
+    interval: 30s
+    rules:
+      - record: govwatch:llm_request_duration_seconds:p95_1h
+        expr: histogram_quantile(0.95, sum by (le, model) (rate(govwatch_llm_request_duration_seconds_bucket[1h])))
+
+      - record: govwatch:agent_step_duration_seconds:p95_1h
+        expr: histogram_quantile(0.95, sum by (le, step) (rate(govwatch_agent_step_duration_seconds_bucket[1h])))
+
+      - record: govwatch:review_queue_oldest_age_seconds
+        expr: time() - govwatch_review_queue_oldest_timestamp_seconds
+
+  - name: govwatch.agent.alerts
+    rules:
+      - alert: GovwatchLLMDown
+        expr: govwatch_llm_up == 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "the agent can't use {{ $labels.model }}: ollama is down or the model isn't pulled"
+          runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchllmdown
+
+      # ~1-3s per call when the model fits in VRAM. 15s+ means it spilled onto the CPU
+      # (memory pressure, a bigger model) - the queue will start falling behind
+      - alert: GovwatchLLMSlow
+        expr: govwatch:llm_request_duration_seconds:p95_1h > 15
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.model }} p95 latency is {{ $value | printf `%.0f` }}s"
+          runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchllmslow
+
+      - alert: GovwatchAgentFailing
+        expr: increase(govwatch_agent_bills_total{outcome="failed"}[1h]) > 5
+        labels:
+          severity: warning
+        annotations:
+          summary: more than 5 bills failed to summarize in the last hour
+          runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchagentfailing
+
+      # the shadow check (decisions.md #41): the model's policy area vs the official one.
+      # baseline agreement from the first live batches was ~58%
+      - alert: GovwatchAgentAgreementDrop
+        expr: |
+          govwatch_agent_policy_area_agreement{window="recent"}
+            < ignoring(window) govwatch_agent_policy_area_agreement{window="baseline"} - 0.15
+          and ignoring(window) govwatch_agent_quality_samples{window="recent"} >= 30
+          and ignoring(window) govwatch_agent_quality_samples{window="baseline"} >= 30
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: agreement with official policy areas dropped 15+ points below baseline
+          runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchagentagreementdrop
+
+      # first live batches: ~1-2% of summaries still failed after the retry
+      - alert: GovwatchAgentGateFailuresHigh
+        expr: |
+          govwatch_agent_gate_failure_ratio{window="recent"} > 0.15
+          and ignoring(window) govwatch_agent_quality_samples{window="recent"} >= 30
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of recent summaries failed the validation gate"
+          runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchagentgatefailureshigh
+
+      # the model's picks moved but the incoming bills didn't: the model or prompt changed,
+      # not the news. if input drift is high too, the bills changed topic and that's fine
+      - alert: GovwatchAgentOutputDrift
+        expr: |
+          govwatch_agent_policy_area_drift{kind="output"} > 0.25
+          and ignoring(kind) govwatch_agent_policy_area_drift{kind="input"} < 0.1
+          and on() govwatch_agent_quality_samples{window="recent"} >= 30
+          and on() govwatch_agent_quality_samples{window="baseline"} >= 30
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: the model's policy-area picks drifted while the incoming bills didn't
+          runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchagentoutputdrift
+
+      - alert: GovwatchReviewRejectionsHigh
+        expr: |
+          govwatch_review_rejection_ratio{window="recent"} > 0.3
+          and ignoring(window) govwatch_review_decided{window="recent"} >= 10
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "reviewers rejected {{ $value | humanizePercentage }} of recent summaries"
+          runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchreviewrejectionshigh
+
+      - alert: GovwatchReviewQueueStale
+        expr: govwatch:review_queue_oldest_age_seconds{status="pending_review"} > 3 * 86400
+        for: 1h
+        labels:
+          severity: info
+        annotations:
+          summary: a summary has been waiting for review for over 3 days
+          runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchreviewqueuestale

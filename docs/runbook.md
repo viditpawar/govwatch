@@ -138,3 +138,93 @@ and the run still succeeded.
 
 **Check:** worker logs for `skipping record`. One-offs are upstream noise. A steady
 stream usually means the API's schema changed, and the parser needs updating.
+
+---
+
+## Agent and review alerts
+
+The agent runs in the worker loop (`GOVWATCH_AGENT_ENABLED=true`) and summarizes changed
+bills after each ingest cycle. Its quality signals compare a recent window (7 days) with a
+baseline (the 30 days before), and only fire with at least 30 summaries in each.
+
+## GovwatchLLMDown
+
+**What it means:** the agent's pre-flight check can't reach Ollama, or the model isn't pulled.
+Ingestion carries on; summaries just stop being produced until it's back.
+
+**Check:**
+- `curl http://localhost:11434/api/version` on the host. If nothing answers, start the Ollama
+  app (it doesn't always come back after a reboot).
+- `ollama list` should include the configured model (`GOVWATCH_AGENT_MODEL`, default
+  `qwen2.5:3b`). If it's missing: `ollama pull qwen2.5:3b`.
+- From a container: `docker compose exec worker python -c "import urllib.request;
+  print(urllib.request.urlopen('http://host.docker.internal:11434/api/version').read())"`.
+
+## GovwatchLLMSlow
+
+**What it means:** p95 model latency is over 15s. Normally it's 1-3s, when the model fits
+entirely in GPU memory.
+
+**Check:** `ollama ps`. If the model shows part of it on the CPU, something else is using
+VRAM or the machine is short on RAM. Close other GPU users, or move to a smaller model.
+Nothing is lost while it's slow, but the review queue falls behind.
+
+## GovwatchAgentFailing
+
+**What it means:** more than 5 bills failed to summarize in an hour, for reasons other than
+Ollama being down (that stops the batch instead, #49).
+
+**Check:** worker logs for `agent failed`. Usually congress.gov errors while fetching CRS
+summaries (see GovwatchUpstreamErrors), or the model returning something that isn't JSON.
+
+## GovwatchAgentAgreementDrop
+
+**What it means:** the model now agrees with the official CRS policy area 15+ points less
+often than in the baseline window. This is the shadow check from decisions.md #41. The
+official area is what's stored either way, so no wrong data has gone out. But a change in
+model behaviour usually affects the summaries too.
+
+**Check:**
+- Did the model, the prompt (`PROMPT_VERSION`), or Ollama itself change recently?
+- Compare with GovwatchAgentOutputDrift and the "Policy area drift" panel. If the input drift
+  is high, the incoming bills changed topic, and the agreement baseline may simply not apply
+  to the new mix.
+
+## GovwatchAgentGateFailuresHigh
+
+**What it means:** over 15% of recent summaries still failed the validation gate after the
+retry (normally 1-2%). They're in the review queue as `needs_attention`, so nothing unchecked
+went out, but reviewers have more to do.
+
+**Check:** the "Gate rejections by check" panel.
+- Mostly one check: look at a few of those summaries in the review app. Either the model has
+  started doing something new, or the check has a false positive. Both of the first two false
+  positives (CDC, USDA) were found this way.
+- Spread across checks: suspect the model or the prompt.
+
+## GovwatchAgentOutputDrift
+
+**What it means:** the distribution of the model's policy-area picks moved (Jensen-Shannon
+divergence over 0.25), while the official areas of the incoming bills didn't (under 0.1). So
+the model behaves differently on the same kind of input.
+
+**Check:** a model or prompt change, or an Ollama update that changed default sampling
+settings. Re-run the benchmark from decisions.md #37 against a few known bills.
+
+## GovwatchReviewRejectionsHigh
+
+**What it means:** reviewers rejected over 30% of recent summaries (with at least 10 decisions).
+
+**Check:** the "Recent reviewer rejections" table. Rejections where the gate had *not* flagged
+anything show what the gate is missing. Those notes are the best input for a new check or a
+prompt change.
+
+## GovwatchReviewQueueStale
+
+**What it means:** a summary has waited more than 3 days for review. Summaries aren't used
+until approved, so analysts are missing them.
+
+**Check:** whether anyone is reviewing (http://localhost:8080), and whether the agent is
+producing more than reviewers can get through. If so, raise the bar for what reaches review,
+or add reviewers.
+

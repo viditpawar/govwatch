@@ -9,6 +9,13 @@ x-govwatch: &govwatch
   environment:
     GOVWATCH_DATABASE_URL: postgresql://govwatch:govwatch@postgres:5432/govwatch
     GOVWATCH_METRICS_HOST: 0.0.0.0
+    # the agent runs in the worker loop against ollama on the host machine (it needs the
+    # GPU, so it isn't a container here). only the worker acts on AGENT_ENABLED
+    GOVWATCH_AGENT_ENABLED: "true"
+    GOVWATCH_OLLAMA_URL: http://host.docker.internal:11434
+  # docker desktop provides host.docker.internal already; this makes it work on linux too
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
 
 services:
   postgres:

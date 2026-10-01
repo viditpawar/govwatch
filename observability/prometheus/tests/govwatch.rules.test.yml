@@ -167,3 +167,170 @@ tests:
             exp_annotations:
               summary: congress needed 2 auto-repairs in the last 24h
               runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchrepeatedrepairs
+
+  # regression: the review app used to export the worker's metrics too, including
+  # heartbeat=0, which made this alert fire for job="review" with a healthy worker
+  - name: worker stalled only looks at the worker's own heartbeat
+    interval: 1m
+    input_series:
+      - series: 'govwatch_worker_heartbeat_timestamp_seconds{job="review", instance="review:8080"}'
+        values: "0x120"
+      - series: 'govwatch_worker_heartbeat_timestamp_seconds{job="govwatch", instance="worker:9100"}'
+        values: "0+60x120"
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: GovwatchWorkerStalled
+        exp_alerts: []
+
+  - name: llm down only after 30 minutes
+    interval: 5m
+    input_series:
+      - series: 'govwatch_llm_up{model="qwen2.5:3b"}'
+        values: "1 1 0 0 0 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: GovwatchLLMDown
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: GovwatchLLMDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              model: qwen2.5:3b
+            exp_annotations:
+              summary: "the agent can't use qwen2.5:3b: ollama is down or the model isn't pulled"
+              runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchllmdown
+
+  - name: agreement drop fires with enough samples
+    interval: 1m
+    input_series:
+      - series: 'govwatch_agent_policy_area_agreement{window="baseline"}'
+        values: "0.6x120"
+      - series: 'govwatch_agent_policy_area_agreement{window="recent"}'
+        values: "0.4x120"
+      - series: 'govwatch_agent_quality_samples{window="baseline"}'
+        values: "80x120"
+      - series: 'govwatch_agent_quality_samples{window="recent"}'
+        values: "40x120"
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: GovwatchAgentAgreementDrop
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: agreement with official policy areas dropped 15+ points below baseline
+              runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchagentagreementdrop
+
+  - name: agreement drop ignores a quiet week
+    interval: 1m
+    input_series:
+      - series: 'govwatch_agent_policy_area_agreement{window="baseline"}'
+        values: "0.6x120"
+      - series: 'govwatch_agent_policy_area_agreement{window="recent"}'
+        values: "0.2x120"
+      - series: 'govwatch_agent_quality_samples{window="baseline"}'
+        values: "80x120"
+      # only 8 summaries this week: too few to call it a trend
+      - series: 'govwatch_agent_quality_samples{window="recent"}'
+        values: "8x120"
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: GovwatchAgentAgreementDrop
+        exp_alerts: []
+
+  - name: output drift without input drift means the model changed
+    interval: 1m
+    input_series:
+      - series: 'govwatch_agent_policy_area_drift{kind="output"}'
+        values: "0.4x120"
+      - series: 'govwatch_agent_policy_area_drift{kind="input"}'
+        values: "0.05x120"
+      - series: 'govwatch_agent_quality_samples{window="baseline"}'
+        values: "80x120"
+      - series: 'govwatch_agent_quality_samples{window="recent"}'
+        values: "40x120"
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: GovwatchAgentOutputDrift
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              kind: output
+            exp_annotations:
+              summary: the model's policy-area picks drifted while the incoming bills didn't
+              runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchagentoutputdrift
+
+  - name: output drift explained by the bills changing topic is not an alert
+    interval: 1m
+    input_series:
+      - series: 'govwatch_agent_policy_area_drift{kind="output"}'
+        values: "0.4x120"
+      - series: 'govwatch_agent_policy_area_drift{kind="input"}'
+        values: "0.35x120"
+      - series: 'govwatch_agent_quality_samples{window="baseline"}'
+        values: "80x120"
+      - series: 'govwatch_agent_quality_samples{window="recent"}'
+        values: "40x120"
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: GovwatchAgentOutputDrift
+        exp_alerts: []
+
+  - name: gate failure rate
+    interval: 1m
+    input_series:
+      - series: 'govwatch_agent_gate_failure_ratio{window="recent"}'
+        values: "0.2x120"
+      - series: 'govwatch_agent_quality_samples{window="recent"}'
+        values: "50x120"
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: GovwatchAgentGateFailuresHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              window: recent
+            exp_annotations:
+              summary: 20% of recent summaries failed the validation gate
+              runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchagentgatefailureshigh
+
+  - name: llm slow when p95 goes past 15s
+    interval: 1m
+    input_series:
+      # every call lands in the 20s bucket: the model spilled onto the cpu
+      - series: 'govwatch_llm_request_duration_seconds_bucket{model="qwen2.5:3b", le="13"}'
+        values: "0x150"
+      - series: 'govwatch_llm_request_duration_seconds_bucket{model="qwen2.5:3b", le="20"}'
+        values: "0+1x150"
+      - series: 'govwatch_llm_request_duration_seconds_bucket{model="qwen2.5:3b", le="+Inf"}'
+        values: "0+1x150"
+    alert_rule_test:
+      - eval_time: 120m
+        alertname: GovwatchLLMSlow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              model: qwen2.5:3b
+            exp_annotations:
+              summary: qwen2.5:3b p95 latency is 20s
+              runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchllmslow
+
+  - name: review queue goes stale after 3 days
+    interval: 5m
+    input_series:
+      - series: 'govwatch_review_queue_oldest_timestamp_seconds{status="pending_review"}'
+        values: "0x1300"
+    alert_rule_test:
+      - eval_time: 2d
+        alertname: GovwatchReviewQueueStale
+        exp_alerts: []
+      - eval_time: 4d
+        alertname: GovwatchReviewQueueStale
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              status: pending_review
+            exp_annotations:
+              summary: a summary has been waiting for review for over 3 days
+              runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchreviewqueuestale
