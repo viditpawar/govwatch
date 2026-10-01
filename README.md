@@ -123,7 +123,8 @@ silently incomplete data.
 ## Design notes
 
 The upstream APIs have quirks that only show up against real data. These shaped most of
-the design:
+the design. The full reasoning behind every significant decision (storage, retry policy,
+alert thresholds, platform choices) is in [decisions.md](decisions.md).
 
 | Problem | How govwatch handles it |
 |---|---|
@@ -177,6 +178,7 @@ govwatch/
 ├── .github/                  # CI workflow, Dependabot
 ├── deploy/compose/           # Prometheus config, Grafana provisioning, db init
 ├── docs/runbook.md           # one section per alert
+├── decisions.md              # why things are the way they are
 ├── compose.yaml
 ├── Dockerfile
 └── pyproject.toml
