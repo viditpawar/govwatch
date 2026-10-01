@@ -42,6 +42,10 @@ entry stays and is marked superseded, so the reasoning history is kept.
 | 34 | [Database tests fail, not skip, in CI](#34-database-tests-fail-not-skip-in-ci) | CI/CD |
 | 35 | [e2e against the live APIs](#35-e2e-against-the-live-apis) | CI/CD |
 | 36 | [Python minor upgrades are deliberate, not Dependabot PRs](#36-python-minor-upgrades-are-deliberate-not-dependabot-prs) | CI/CD |
+| 37 | [qwen2.5:3b as the agent model](#37-qwen253b-as-the-agent-model) | Agent |
+| 38 | [The LLM summarizes and tags; code determines facts](#38-the-llm-summarizes-and-tags-code-determines-facts) | Agent |
+| 39 | [Schema-constrained decoding over a fixed CRS vocabulary](#39-schema-constrained-decoding-over-a-fixed-crs-vocabulary) | Agent |
+| 40 | [Summaries are grounded in source text, never a title alone](#40-summaries-are-grounded-in-source-text-never-a-title-alone) | Agent |
 
 ---
 
@@ -593,3 +597,85 @@ quietly drop a third of the suite while the build stays green.
 - Dependabot opened a 3.12 → 3.14 base image PR. Merging it would have shipped a Python
   version the test suite never ran on, because CI tests with `.python-version`.
 - That PR's image also failed the Trivy gate.
+
+## 37. qwen2.5:3b as the agent model
+
+**Date:** 2026-09-30 · **Status:** accepted
+
+**Decision:** Run the Phase 2 agent on `qwen2.5:3b` through a local Ollama, with temperature 0.
+
+**Why:**
+- The dev machine has an RTX 3050 with 4 GB VRAM. A 3B model fits entirely on the GPU; a 7B
+  model doesn't.
+- I benchmarked three installed models on real bills from the pipeline, with the same prompts:
+
+| | llama3.2:3b | qwen2.5:3b | qwen2.5:7b |
+|---|---|---|---|
+| Fits in 4 GB VRAM | yes | yes | no (2.3 of 5.1 GB on GPU) |
+| Warm latency per bill (median) | 3.5 s | 3.2 s | 13.2 s (1 bill) |
+| Official policy area matched (10 bills, schema-enforced) | 4/10 | 6/10 | not run |
+
+- qwen2.5:3b was the fastest and the most accurate of the models that fit.
+- The 7B model was more careful but about 4× slower, because of the CPU offload.
+- At about 350 changed bills a day, 3.2 s each is under 20 minutes of model time a day.
+
+**Considered:** qwen2.5:7b. It would be the pick on a GPU with 8 GB or more. Swapping it in
+is a config change, and the benchmark above can be re-run to justify it.
+
+**Caveat:** 6/10 means a small local model is a drafting aid, not an authority. That's the
+reason for #38–#40 and for the human review step.
+
+## 38. The LLM summarizes and tags; code determines facts
+
+**Date:** 2026-09-30 · **Status:** accepted
+
+**Decision:**
+- The bill's legislative stage (introduced, in committee, passed one chamber, passed both,
+  enacted) is derived by code from the action data.
+- The model only writes the plain-language summary and picks a policy area.
+
+**Why:**
+- On 6 real bills, with the latest-action text right in the prompt, llama3.2:3b got the
+  stage right 1/6 times and qwen2.5:3b 3/6. llama labelled two Senate resolutions "enacted".
+- The stage is a deterministic fact, and code gets it right every time.
+- General rule for the agent: don't ask a model for anything code can work out exactly. Use
+  code-derived facts as context for the model and as checks on what it claims.
+
+## 39. Schema-constrained decoding over a fixed CRS vocabulary
+
+**Date:** 2026-09-30 · **Status:** accepted
+
+**Decision:**
+- Pass a JSON Schema to Ollama's `format`, so generation is constrained to it.
+- The policy area must be one of congress.gov's 32 CRS policy areas.
+- Score the model against the official `policyArea` congress.gov assigns.
+
+**Why:**
+- With a plain JSON instruction, qwen2.5:3b invented stages (`"submitted"`, `"considered"`)
+  on 2 of 6 bills. With the schema enforced during decoding, both models returned 10/10 valid
+  values.
+- Using CRS's own vocabulary means there's ground truth to score against. congress.gov
+  assigns an official area to most bills, so "agreement with CRS" becomes a real accuracy
+  metric to track over time and alert on (drift), instead of guessing at quality.
+- The validation gate still re-checks everything after generation, since constrained
+  decoding controls the format, not whether the content is true.
+
+## 40. Summaries are grounded in source text, never a title alone
+
+**Date:** 2026-09-30 · **Status:** accepted
+
+**Decision:**
+- The agent summarizes from source text: congress.gov's CRS summary when one exists, plus
+  the title and actions.
+- Bills with no substantive text yet get a title-only stub, clearly marked as such, instead
+  of a generated summary.
+
+**Why:**
+- Given only the title "GLRI Act of 2026" (the Great Lakes Restoration Initiative),
+  llama3.2:3b produced a confident summary about national water infrastructure and climate
+  change, none of which comes from the title.
+- A fluent invented summary is worse than none for policy staff, because it reads as
+  authoritative.
+- The validation gate will also flag summaries that mention specifics (dollar amounts,
+  agencies, dates) that don't appear in the source text.
+
