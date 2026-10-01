@@ -1,0 +1,106 @@
+name: model-eval
+
+# Runs the real model over the golden set whenever anything that shapes its output
+# changes: the prompt, the gate, the runner, the eval itself. Unit tests use a fake model,
+# so this is the only check that would notice a prompt edit making summaries worse.
+on:
+  pull_request:
+    paths:
+      - "src/govwatch/agent/**"
+      - "tests/eval/**"
+      - ".github/workflows/model-eval.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/govwatch/agent/**"
+      - "tests/eval/**"
+      - ".github/workflows/model-eval.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: model-eval-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  OLLAMA_VERSION: "0.35.0"
+  MODEL: qwen2.5:3b
+  # outside the system service's directory, so the model can be cached between runs
+  OLLAMA_MODELS: /home/runner/.ollama-models
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+
+      - name: cache the model
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /home/runner/.ollama-models
+          key: ollama-${{ env.MODEL }}-${{ env.OLLAMA_VERSION }}
+
+      - name: install ollama
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          # the installer starts a system service with its own model dir; use ours instead
+          sudo systemctl stop ollama || true
+
+      - name: start ollama
+        run: |
+          nohup ollama serve > /tmp/ollama.log 2>&1 &
+          for _ in $(seq 1 30); do
+            curl -sf localhost:11434/api/version && exit 0
+            sleep 1
+          done
+          cat /tmp/ollama.log
+          exit 1
+
+      - name: pull the model
+        run: ollama pull "$MODEL"
+
+      # runs on cpu here, so it's slower than on a gpu (a few minutes for 25 bills) and
+      # not bit-identical to it. the floors leave room for that (decisions.md #54)
+      - name: evaluate
+        env:
+          # settings require api keys, but the eval reads frozen inputs and never calls out
+          GOVWATCH_CONGRESS_API_KEY: unused
+          GOVWATCH_REGULATIONS_API_KEY: unused
+          GOVWATCH_AGENT_MODEL: ${{ env.MODEL }}
+        run: uv run govwatch eval --json eval-report.json
+
+      - name: job summary
+        if: always()
+        run: |
+          [ -f eval-report.json ] || { echo "no report (eval didn't run)" >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          r = json.load(open("eval-report.json"))
+          s = r["summary"]
+          print(f"### Model eval: {s['model']}, prompt {s['prompt_version']}, {s['bills']} golden bills\n")
+          print("| metric | value | floor |\n|---|---|---|")
+          print(f"| gate pass rate | {s['gate_pass_rate']:.0%} | 85% |")
+          print(f"| first-try pass rate | {s['first_try_rate']:.0%} | - |")
+          print(f"| policy area agreement | {s['policy_agreement']:.0%} | 35% |")
+          print(f"| source support (median) | {s['median_source_support']:.2f} | 0.60 |")
+          print(f"| model time per bill (median) | {s['median_llm_seconds']}s | - |")
+          bad = [b for b in r["bills"] if b["status"] != "pending_review"]
+          if bad:
+              print("\n**Did not pass the gate:**\n")
+              for b in bad:
+                  print(f"- `{b['bill_id']}` ({b['status']}): {'; '.join(b['issues'])}")
+          PY
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: eval-report
+          path: eval-report.json
+          if-no-files-found: ignore
