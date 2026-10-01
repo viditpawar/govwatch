@@ -1,0 +1,25 @@
+apiVersion: 1
+
+# fixed uids so the dashboard json can reference them in both compose and k8s
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+
+  # read-only login that can only see the reporting views (migration 003)
+  - name: govwatch-db
+    uid: govwatch-db
+    type: grafana-postgresql-datasource
+    url: postgres:5432
+    user: grafana_reader
+    secureJsonData:
+      password: grafana_reader
+    jsonData:
+      database: govwatch
+      sslmode: disable
+      postgresVersion: 1700
+    editable: false

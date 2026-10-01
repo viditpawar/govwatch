@@ -67,6 +67,7 @@ services:
       - "9090:9090"
     volumes:
       - ./deploy/compose/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/rules:/etc/prometheus/rules:ro
       - promdata:/prometheus
     depends_on:
       - worker
@@ -79,10 +80,12 @@ services:
       # read-only anonymous access so the dashboards can be demoed without logging in
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/govwatch/dashboards/govwatch.json
     ports:
       - "3001:3000"
     volumes:
       - ./deploy/compose/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/etc/govwatch/dashboards:ro
       - grafanadata:/var/lib/grafana
     depends_on:
       - prometheus
