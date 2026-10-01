@@ -18,11 +18,11 @@ spec:
     type: Recreate
   selector:
     matchLabels:
-      {{- include "govwatch.selectorLabels" . | nindent 6 }}
+      {{- include "govwatch.workerSelectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "govwatch.selectorLabels" . | nindent 8 }}
+        {{- include "govwatch.workerSelectorLabels" . | nindent 8 }}
       {{- if not .Values.apiKeys.existingSecret }}
       annotations:
         checksum/api-keys: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}

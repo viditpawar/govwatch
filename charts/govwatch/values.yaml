@@ -45,6 +45,28 @@ database:
       enabled: true
       passwordSecret: ""
 
+# phase 2: the summarization agent runs inside the worker loop. it needs an ollama the
+# pods can reach - on kind, the host machine's (where the gpu is) via host.docker.internal
+agent:
+  enabled: false
+  ollamaUrl: http://host.docker.internal:11434
+  # for the worker's network policy egress rule
+  ollamaPort: 11434
+  model: qwen2.5:3b
+  batchSize: 25
+
+# the human review queue for agent summaries
+review:
+  enabled: false
+  service:
+    # ClusterIP + port-forward by default. a NodePort is fine on kind, where terraform only
+    # publishes it on the host's loopback - the app has no authentication
+    type: ClusterIP
+    nodePort: null
+  resources:
+    requests: { cpu: 20m, memory: 96Mi }
+    limits: { memory: 192Mi }
+
 serviceAccount:
   create: true
   name: ""

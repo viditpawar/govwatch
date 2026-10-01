@@ -13,7 +13,7 @@ metadata:
 spec:
   selector:
     matchLabels:
-      {{- include "govwatch.selectorLabels" . | nindent 6 }}
+      {{- include "govwatch.workerSelectorLabels" . | nindent 6 }}
   endpoints:
     - port: metrics
       path: /metrics
@@ -22,6 +22,30 @@ spec:
       relabelings:
         - targetLabel: job
           replacement: govwatch
+{{- if .Values.review.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "govwatch.fullname" . }}-review
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "govwatch.labels" . | nindent 4 }}
+    {{- with $m.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "govwatch.reviewSelectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ $m.serviceMonitor.interval }}
+      relabelings:
+        - targetLabel: job
+          replacement: review
+{{- end }}
 {{- end }}
 {{- if $m.prometheusRule.enabled }}
 ---

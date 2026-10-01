@@ -22,6 +22,18 @@ app.kubernetes.io/name: {{ include "govwatch.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
+{{/* the worker and the review app share a release, so every selector also pins the
+component - otherwise the worker's service would pick up review pods too */}}
+{{- define "govwatch.workerSelectorLabels" -}}
+{{ include "govwatch.selectorLabels" . }}
+app.kubernetes.io/component: worker
+{{- end -}}
+
+{{- define "govwatch.reviewSelectorLabels" -}}
+{{ include "govwatch.selectorLabels" . }}
+app.kubernetes.io/component: review
+{{- end -}}
+
 {{- define "govwatch.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create -}}
 {{- default (include "govwatch.fullname" .) .Values.serviceAccount.name -}}
@@ -72,6 +84,14 @@ environment, child processes and crash dumps */}}
   value: {{ .Values.config.auditAutoRepair | quote }}
 - name: GOVWATCH_LOG_LEVEL
   value: {{ .Values.config.logLevel | quote }}
+- name: GOVWATCH_AGENT_ENABLED
+  value: {{ .Values.agent.enabled | quote }}
+- name: GOVWATCH_OLLAMA_URL
+  value: {{ .Values.agent.ollamaUrl | quote }}
+- name: GOVWATCH_AGENT_MODEL
+  value: {{ .Values.agent.model | quote }}
+- name: GOVWATCH_AGENT_BATCH_SIZE
+  value: {{ .Values.agent.batchSize | quote }}
 - name: GOVWATCH_METRICS_HOST
   value: "0.0.0.0"
 - name: GOVWATCH_METRICS_PORT

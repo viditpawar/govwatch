@@ -1,0 +1,129 @@
+{{- if .Values.review.enabled }}
+{{- $r := .Values.review }}
+# the human review queue (decisions.md #45). no authentication (#46): reach it with
+# `kubectl port-forward` or a NodePort that's only published on loopback, as the
+# terraform kind setup does. never put it behind a public ingress as-is
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "govwatch.fullname" . }}-review
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "govwatch.labels" . | nindent 4 }}
+    app.kubernetes.io/component: review
+  annotations:
+    checkov.io/skip1: CKV_K8S_11=No CPU limit on purpose, same as the worker (decisions.md #32)
+    checkov.io/skip2: CKV_K8S_15=pullPolicy is a value. Images side-loaded into kind are in no registry
+    checkov.io/skip3: CKV_K8S_43=Set image.digest to deploy by digest. Local kind builds use a content-hash tag
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "govwatch.reviewSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "govwatch.reviewSelectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "govwatch.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: review
+          image: {{ include "govwatch.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["review", "--host", "0.0.0.0", "--port", "8080"]
+          env:
+            {{- include "govwatch.env" . | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml $r.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: secrets
+              mountPath: /var/run/secrets/govwatch
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+        {{- include "govwatch.secretsVolume" . | nindent 8 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "govwatch.fullname" . }}-review
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "govwatch.labels" . | nindent 4 }}
+    app.kubernetes.io/component: review
+spec:
+  type: {{ $r.service.type }}
+  selector:
+    {{- include "govwatch.reviewSelectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+      {{- if and (eq $r.service.type "NodePort") $r.service.nodePort }}
+      nodePort: {{ $r.service.nodePort }}
+      {{- end }}
+{{- if .Values.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "govwatch.fullname" . }}-review
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "govwatch.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "govwatch.reviewSelectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # reviewers (via port-forward / the loopback NodePort) and prometheus, one port
+    - ports:
+        - port: http
+          protocol: TCP
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+    # the database only: the review app makes no other outbound calls
+    - ports:
+        - { port: 5432, protocol: TCP }
+      {{- if .Values.database.cnpg.enabled }}
+      to:
+        - podSelector:
+            matchLabels:
+              cnpg.io/cluster: {{ include "govwatch.dbClusterName" . }}
+      {{- end }}
+{{- end }}
+{{- end }}

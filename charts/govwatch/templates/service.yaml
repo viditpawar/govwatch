@@ -5,10 +5,11 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "govwatch.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
 spec:
   type: ClusterIP
   selector:
-    {{- include "govwatch.selectorLabels" . | nindent 4 }}
+    {{- include "govwatch.workerSelectorLabels" . | nindent 4 }}
   ports:
     - name: metrics
       port: 9100
