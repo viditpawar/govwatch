@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # --- build: resolve deps from the lockfile into a venv ---------------------------
-FROM python:3.12-slim AS build
+FROM python:3.14-slim AS build
 
 RUN pip install --no-cache-dir uv==0.12.21
 
@@ -22,7 +22,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-editable
 
 # --- runtime: just the venv, non-root -----------------------------------------------
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 # pick up debian security fixes that landed after the base image was published
 # (trivy flagged fixable openssl CVEs otherwise)
