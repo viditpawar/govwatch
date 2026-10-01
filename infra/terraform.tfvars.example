@@ -1,0 +1,8 @@
+# copy to terraform.tfvars (gitignored), or export TF_VAR_congress_api_key instead
+congress_api_key = "your-api-data-gov-key"
+
+# optional - defaults to the congress key
+# regulations_api_key = ""
+
+# backfill_days         = 7
+# poll_interval_seconds = 900

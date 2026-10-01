@@ -216,3 +216,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Terraform (state and real tfvars hold secrets; the provider lock file is committed)
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+*.tfvars
+!*.tfvars.example
