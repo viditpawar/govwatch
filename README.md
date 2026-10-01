@@ -133,6 +133,7 @@ the design:
 - **Observability:** prometheus-client, Prometheus 3 (recording rules, SLO burn-rate alerts, promtool tests), Grafana 12
 - **Packaging:** uv, Docker (multi-stage, non-root), Docker Compose
 - **Kubernetes:** Helm, CloudNativePG (Postgres operator), Prometheus Operator CRDs, NetworkPolicy
+- **Infrastructure as code:** Terraform (kind, helm, kubernetes, random providers)
 - **Quality:** pytest, respx, ruff
 
 ## Project structure
@@ -159,6 +160,7 @@ govwatch/
 │   ├── prometheus/tests/     # promtool unit tests for the rules
 │   └── grafana/dashboards/   # dashboard json (shared by compose and k8s)
 ├── charts/govwatch/          # Helm chart: worker, CloudNativePG Postgres, monitoring CRs
+├── infra/                    # Terraform: kind cluster, operators, monitoring stack, app
 ├── deploy/compose/           # Prometheus config, Grafana provisioning, db init
 ├── docs/runbook.md           # one section per alert
 ├── compose.yaml
@@ -224,6 +226,54 @@ docker compose exec postgres psql -U govwatch -c \
   "select source, status, records_seen, records_changed, api_requests, finished_at
      from ingest_runs order by id desc limit 10"
 ```
+
+## Kubernetes with Terraform
+
+One `terraform apply` stands up the whole platform on a local kind cluster. No cloud
+account or registry is needed:
+
+```bash
+cd infra
+cp terraform.tfvars.example terraform.tfvars   # add your api key
+terraform init
+terraform apply
+```
+
+| Resource | What it does |
+|---|---|
+| `kind_cluster` | Single-node cluster (Kubernetes 1.36), with Grafana and Prometheus mapped to localhost |
+| `terraform_data.image` | Builds the image from this repo and side-loads it into the node. The tag includes a content hash of `src/`, so code changes roll the deployment |
+| `helm_release.cnpg` | CloudNativePG operator |
+| `helm_release.kube_prometheus_stack` | Prometheus, Alertmanager, Grafana. Picks up ServiceMonitors and rules from every namespace; the Grafana sidecar loads the govwatch dashboard; Postgres data source configured as `grafana_reader` |
+| `random_password` x2 | Grafana admin password, and the read-only database role's password |
+| `kubernetes_secret_v1` x2 | API keys, and the `grafana_reader` credentials that CloudNativePG applies to the managed role |
+| `helm_release.govwatch` | The chart, with alert rules and the dashboard read straight from `observability/` |
+
+Then:
+
+| | |
+|---|---|
+| Grafana | http://localhost:30300 (anonymous read-only; admin password: `terraform output -raw grafana_admin_password`) |
+| Prometheus | http://localhost:30090 |
+| kubectl | `kubectl --context kind-govwatch -n govwatch get pods` |
+
+`terraform destroy` removes everything.
+
+Tested end to end:
+- **Apply:** a clean apply takes about 5 minutes, most of it pulling kube-prometheus-stack images.
+- **Idempotent:** a second `plan` reports no changes.
+- **Destroy:** takes about 25 seconds.
+
+Some details:
+
+- **Isolated Helm config.** The Helm provider uses its own repo config and cache inside
+  `.terraform/`, so a broken global Helm repo list on the machine running it can't break
+  the apply. That happened during development.
+- **Providers are wired to the cluster resource's own credentials,** not the current
+  kubectl context, so applying can never touch a different cluster.
+- **Local state on purpose.** This is a throwaway local environment. A shared environment
+  would use a remote backend with locking.
+- **The provider lock file is committed** with checksums for Windows, Linux, and macOS.
 
 ## Kubernetes (Helm)
 
@@ -400,7 +450,7 @@ docker run --rm -v "$PWD/observability:/obs:ro" --entrypoint promtool prom/prome
 - [x] Grafana dashboard, SLO burn-rate alerts, runbook
 - [x] Completeness auditor with self-healing re-ingest
 - [x] Helm chart (CloudNativePG Postgres, hardened pod, NetworkPolicy, monitoring CRs)
-- [ ] Terraform-provisioned kind cluster (cluster, monitoring stack, app)
+- [x] Terraform-provisioned kind cluster (cluster, operators, monitoring stack, app)
 - [ ] GitHub Actions: lint, test, Trivy, Checkov, image publish, kind smoke test
 
 **Phase 2: agent layer + AgentOps**
