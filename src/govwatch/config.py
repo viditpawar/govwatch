@@ -38,7 +38,9 @@ class Settings(BaseSettings):
     # agent (phase 2). runs against a local ollama; see decisions.md #37 for the model
     ollama_url: str = "http://localhost:11434"
     agent_model: str = "qwen2.5:3b"
-    agent_batch_size: int = Field(default=10, ge=1, le=500)
+    agent_batch_size: int = Field(default=25, ge=1, le=500)
+    # run a batch after every ingest cycle. off by default: it needs a reachable ollama
+    agent_enabled: bool = False
 
     # 0.0.0.0 so prometheus can reach it inside a container; use 127.0.0.1 for local dev
     metrics_host: str = "0.0.0.0"

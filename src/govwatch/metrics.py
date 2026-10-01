@@ -162,16 +162,7 @@ LLM_TOKENS = Counter("govwatch_llm_tokens_total", "Tokens processed", ["model", 
 
 # --- human review ---------------------------------------------------------------
 
-REVIEW_DECISIONS = Counter(
-    "govwatch_review_decisions_total",
-    "Reviewer verdicts, by decision and by what the validation gate had said",
-    ["decision", "from_status"],
-)
-REVIEW_LATENCY = Histogram(
-    "govwatch_review_time_to_decision_seconds",
-    "From summary created to reviewed",
-    buckets=(60, 300, 900, 3600, 4 * 3600, 12 * 3600, 86400, 3 * 86400, 7 * 86400),
-)
+# decisions and time-to-review live in review/app.py, on the review app's own registry
 # read back from the database (like the lag gauges), so they're right after a restart
 REVIEW_QUEUE = Gauge(
     "govwatch_review_queue_bills", "Bills whose current summary is in a status", ["status"]
@@ -182,6 +173,40 @@ REVIEW_QUEUE_OLDEST = Gauge(
     ["status"],
 )
 REVIEW_STATUSES = ("pending_review", "needs_attention", "stub", "approved", "rejected")
+
+# --- agent quality and drift (agent/quality.py, from the database) --------------------
+
+# labelled so the series only exists once the agent has actually checked ollama - an
+# unlabelled gauge would export 0 ("down") from every process that imports this module
+LLM_UP = Gauge(
+    "govwatch_llm_up", "1 if the last check found ollama up with the model pulled", ["model"]
+)
+AGENT_QUALITY_SAMPLES = Gauge(
+    "govwatch_agent_quality_samples", "Summaries generated in the window", ["window"]
+)
+AGENT_POLICY_AGREEMENT = Gauge(
+    "govwatch_agent_policy_area_agreement",
+    "Share of summaries where the model's policy area matched the official one",
+    ["window"],
+)
+AGENT_GATE_FAILURE_RATIO = Gauge(
+    "govwatch_agent_gate_failure_ratio",
+    "Share of summaries that still failed the validation gate after the retry",
+    ["window"],
+)
+AGENT_SUMMARY_LENGTH = Gauge(
+    "govwatch_agent_summary_length_chars", "Mean summary length in the window", ["window"]
+)
+AGENT_DISTRIBUTION_DRIFT = Gauge(
+    "govwatch_agent_policy_area_drift",
+    "Jensen-Shannon divergence of policy areas, recent vs baseline. kind=input is the "
+    "official areas of incoming bills, kind=output is what the model picked",
+    ["kind"],
+)
+REVIEW_DECIDED = Gauge("govwatch_review_decided", "Summaries reviewed, by window", ["window"])
+REVIEW_REJECTION_RATIO = Gauge(
+    "govwatch_review_rejection_ratio", "Share of reviewed summaries that were rejected", ["window"]
+)
 
 # --- worker --------------------------------------------------------------------
 
@@ -207,6 +232,14 @@ def init_labels() -> None:
         REPAIRED_RECORDS.labels(source)
     for status in REVIEW_STATUSES:
         REVIEW_QUEUE.labels(status)
+
+    from govwatch.agent.validate import CHECKS  # local: keeps metrics free of agent imports
+
+    for check in CHECKS:
+        AGENT_VALIDATION_FAILURES.labels(check)
+    for outcome in ("pending_review", "needs_attention", "stub", "failed"):
+        AGENT_BILLS.labels(outcome)
+    AGENT_RETRIES.labels("validation")
 
 
 def record_run(result: "RunResult") -> None:

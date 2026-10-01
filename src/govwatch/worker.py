@@ -5,6 +5,9 @@ import time
 from datetime import UTC, datetime, timedelta
 
 from govwatch import db, metrics
+from govwatch.agent import quality
+from govwatch.agent.llm import LLMUnavailable, OllamaClient
+from govwatch.agent.runner import run_batch
 from govwatch.audit import AuditResult, AuditTarget, audit_and_repair, audit_due
 from govwatch.config import Settings
 from govwatch.ingest import RunResult, Source, run_ingest, upsert_bills, upsert_documents
@@ -46,6 +49,13 @@ class Worker:
                 "regulations", "regulatory_documents", self.regulations.count_updated_documents
             ),
         ]
+        # the agent runs inside the worker so its metrics get scraped like everything else
+        # (a cli run's metrics die with the process - same reason the worker isn't a cronjob)
+        self.llm = (
+            OllamaClient(settings.ollama_url, settings.agent_model)
+            if settings.agent_enabled
+            else None
+        )
 
     def run_once(self, only: str | None = None) -> list[RunResult]:
         backfill = timedelta(days=self.settings.backfill_days)
@@ -62,7 +72,19 @@ class Worker:
                 self._refresh_metrics(conn)
             if not only:
                 self._run_due_audits(conn)
+                self._run_agent(conn)
         return results
+
+    def _run_agent(self, conn) -> None:
+        if self.llm is None or self._stop.is_set():
+            return
+        try:
+            run_batch(conn, self.congress.bill_context, self.llm, self.settings.agent_batch_size)
+        except LLMUnavailable as exc:
+            # not this cycle's problem to solve: ingestion carries on, govwatch_llm_up=0
+            # drives the alert, and the bills are still waiting next cycle
+            log.warning("agent skipped: %s", exc)
+        self._refresh_metrics(conn)
 
     def run_audits(self, only: str | None = None, repair: bool = False) -> list[AuditResult]:
         """Audit every source now, regardless of when they were last audited."""
@@ -128,6 +150,8 @@ class Worker:
     def close(self) -> None:
         self.congress.close()
         self.regulations.close()
+        if self.llm:
+            self.llm.close()
 
     def _beat(self) -> None:
         self._last_beat = time.time()
@@ -136,6 +160,7 @@ class Worker:
     def _refresh_metrics(self, conn) -> None:
         try:
             metrics.refresh_from_db(conn)
+            quality.refresh(conn)
         except Exception:
             log.warning("couldn't refresh metrics from db", exc_info=True)
 

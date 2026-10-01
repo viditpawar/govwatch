@@ -114,3 +114,15 @@ def test_saying_it_passed_is_fine_once_it_has():
 def test_meta_text_is_caught():
     out = {**GOOD, "summary": "Based on the provided text, " + GOOD["summary"]}
     assert "meta_text" in checks(out)
+
+
+def test_every_check_the_gate_can_report_is_registered():
+    """A check missing from CHECKS wouldn't get its metric series pre-created, so it would
+    be invisible on the dashboard until the first time it fired."""
+    import inspect
+    import re
+
+    from govwatch.agent import validate as v
+
+    emitted = set(re.findall(r'Issue\(\s*"([a-z_]+)"', inspect.getsource(v)))
+    assert emitted == set(v.CHECKS)

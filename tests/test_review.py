@@ -8,6 +8,7 @@ from prometheus_client import REGISTRY
 from govwatch import db
 from govwatch.ingest import upsert_bills
 from govwatch.review import store
+from govwatch.review.app import REGISTRY as REVIEW_REGISTRY
 from govwatch.review.app import create_app
 from govwatch.sources.congress import parse_bill
 
@@ -51,7 +52,8 @@ def status_of(conn, summary_id):
 
 
 def sample(name, **labels):
-    return REGISTRY.get_sample_value(name, labels) or 0
+    registry = REVIEW_REGISTRY if name.startswith("govwatch_review_decisions") else REGISTRY
+    return registry.get_sample_value(name, labels) or 0
 
 
 def test_queue_lists_only_reviewable_current_summaries_oldest_first(conn, client):
@@ -185,4 +187,14 @@ def test_queue_metrics_come_from_the_database(conn):
 
 def test_health_and_metrics_endpoints(client):
     assert client.get("/healthz").text == "ok\n"
-    assert "govwatch_review_decisions_total" in client.get("/metrics").text
+    exported = client.get("/metrics").text
+    # every decision/status pair is exported from the start, before any review happens
+    for combo in (
+        'decision="approved",from_status="pending_review"',
+        'decision="rejected",from_status="needs_attention"',
+    ):
+        assert f"govwatch_review_decisions_total{{{combo}}}" in exported
+    # none of the worker's metrics: a heartbeat of 0 exported from this process would make
+    # the worker-stalled alert fire for job="review"
+    assert "govwatch_worker_heartbeat" not in exported
+    assert "govwatch_llm_up" not in exported

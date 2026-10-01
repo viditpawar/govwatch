@@ -61,15 +61,18 @@ class OllamaClient:
             resp.raise_for_status()
         except httpx.HTTPError as exc:
             metrics.LLM_REQUESTS.labels(self.model, "unavailable").inc()
+            metrics.LLM_UP.labels(self.model).set(0)
             raise LLMUnavailable(
                 f"can't reach Ollama at {self.base_url} ({type(exc).__name__}). "
                 "Start the Ollama app, or set GOVWATCH_OLLAMA_URL."
             ) from exc
         pulled = {m.get("name") for m in resp.json().get("models", [])}
         if self.model not in pulled:
+            metrics.LLM_UP.labels(self.model).set(0)
             raise LLMUnavailable(
                 f"model {self.model} isn't pulled in Ollama. Run: ollama pull {self.model}"
             )
+        metrics.LLM_UP.labels(self.model).set(1)
 
     def generate(self, prompt: Prompt, schema: dict[str, Any]) -> Generation:
         body = {

@@ -9,6 +9,17 @@ from dataclasses import dataclass
 
 from govwatch.agent.prompt import CRS_POLICY_AREAS
 
+# every check this gate can report. metrics pre-create a series for each, so a check that
+# has never fired shows up as 0 instead of being missing from the dashboard
+CHECKS = (
+    "schema",
+    "length",
+    "ungrounded_number",
+    "ungrounded_acronym",
+    "stage_contradiction",
+    "meta_text",
+)
+
 MIN_CHARS = 80
 MAX_CHARS = 700
 MAX_SENTENCES = 4

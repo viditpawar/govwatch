@@ -14,9 +14,14 @@ import psycopg
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
-from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    CollectorRegistry,
+    Counter,
+    Histogram,
+    generate_latest,
+)
 
-from govwatch import metrics
 from govwatch.review import store
 
 TEMPLATES = Jinja2Templates(directory=Path(__file__).parent / "templates")
@@ -27,6 +32,23 @@ FILTERS = {
 }
 MAX_NOTE = 2000
 
+# the review app exports only its own metrics. sharing the default registry would also
+# publish the worker's gauges from this process (heartbeat=0 and so on), and alerts on
+# those would fire for job="review"
+REGISTRY = CollectorRegistry()
+DECISIONS = Counter(
+    "govwatch_review_decisions_total",
+    "Reviewer verdicts, by decision and by what the validation gate had said",
+    ["decision", "from_status"],
+    registry=REGISTRY,
+)
+TIME_TO_DECISION = Histogram(
+    "govwatch_review_time_to_decision_seconds",
+    "From summary created to reviewed",
+    buckets=(60, 300, 900, 3600, 4 * 3600, 12 * 3600, 86400, 3 * 86400, 7 * 86400),
+    registry=REGISTRY,
+)
+
 
 def create_app(database_url: str) -> FastAPI:
     app = FastAPI(title="govwatch review", docs_url=None, redoc_url=None, openapi_url=None)
@@ -34,7 +56,7 @@ def create_app(database_url: str) -> FastAPI:
     # show "none yet" instead of "no data"
     for decision in store.DECISIONS:
         for from_status in store.REVIEWABLE:
-            metrics.REVIEW_DECISIONS.labels(decision, from_status)
+            DECISIONS.labels(decision, from_status)
 
     def db() -> Iterator[psycopg.Connection]:
         with psycopg.connect(database_url, autocommit=True) as conn:
@@ -97,8 +119,8 @@ def create_app(database_url: str) -> FastAPI:
         except store.AlreadyDecided as exc:
             raise HTTPException(409, str(exc)) from exc
 
-        metrics.REVIEW_DECISIONS.labels(done.decision, done.from_status).inc()
-        metrics.REVIEW_LATENCY.observe((done.reviewed_at - done.created_at).total_seconds())
+        DECISIONS.labels(done.decision, done.from_status).inc()
+        TIME_TO_DECISION.observe((done.reviewed_at - done.created_at).total_seconds())
 
         # straight on to the next item, so working through the queue is quick
         nxt = store.queue(conn, store.REVIEWABLE)
@@ -112,7 +134,7 @@ def create_app(database_url: str) -> FastAPI:
 
     @app.get("/metrics")
     def prometheus_metrics():
-        return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+        return Response(generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)
 
     return app
 
