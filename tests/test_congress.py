@@ -250,3 +250,33 @@ def test_gives_up_re_paging_after_max_passes(client):
     )
     assert len(list(client.iter_updated_bills(SINCE, UNTIL))) == 1
     assert route.call_count == MAX_PASSES
+
+
+@respx.mock
+def test_bill_context_with_a_crs_summary(client):
+    respx.get(f"{BASE_URL}bill/119/hr/3270").mock(
+        return_value=httpx.Response(200, json=load("congress_bill_with_summary_detail.json"))
+    )
+    respx.get(f"{BASE_URL}bill/119/hr/3270/summaries").mock(
+        return_value=httpx.Response(200, json=load("congress_bill_with_summary_summaries.json"))
+    )
+    ctx = client.bill_context(119, "hr", 3270)
+
+    assert ctx.policy_area == "Transportation and Public Works"
+    assert ctx.crs_summary.startswith("Air Traffic Control Workforce Development Act")
+    assert "<" not in ctx.crs_summary
+    assert ctx.crs_summary_version
+
+
+@respx.mock
+def test_bill_context_without_a_crs_summary(client):
+    respx.get(f"{BASE_URL}bill/119/hr/9786").mock(
+        return_value=httpx.Response(200, json=load("congress_bill_no_summary_detail.json"))
+    )
+    respx.get(f"{BASE_URL}bill/119/hr/9786/summaries").mock(
+        return_value=httpx.Response(200, json=load("congress_bill_no_summary_summaries.json"))
+    )
+    ctx = client.bill_context(119, "hr", 9786)
+
+    assert ctx.policy_area == "Crime and Law Enforcement"
+    assert ctx.crs_summary is None

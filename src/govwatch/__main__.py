@@ -28,6 +28,9 @@ def main() -> None:
     audit.add_argument(
         "--repair", action="store_true", help="re-ingest the window if records are missing"
     )
+    agent = sub.add_parser("agent", help="summarize changed bills with the local model")
+    agent.add_argument("--limit", type=int, help="max bills this run (default: settings)")
+    agent.add_argument("--bill", help="summarize one bill, e.g. 119-hr-3270")
     args = parser.parse_args()
 
     settings = get_settings()
@@ -53,6 +56,8 @@ def main() -> None:
             worker.close()
         if any(r.status != "success" for r in results):
             raise SystemExit(1)
+    elif args.command == "agent":
+        run_agent(settings, args.limit or settings.agent_batch_size, args.bill)
     elif args.command == "audit":
         worker = Worker(settings)
         try:
@@ -70,6 +75,36 @@ def main() -> None:
                 print(f"{a.source:<12} {a.status}: {a.reason}")
         if any(a.status == "failed" or a.missing for a in audits):
             raise SystemExit(1)
+
+
+def run_agent(settings: Settings, limit: int, bill: str | None) -> None:
+    from govwatch.agent.llm import OllamaClient
+    from govwatch.agent.runner import run_batch
+
+    congress = CongressClient(settings.congress_api_key.get_secret_value())
+    llm = OllamaClient(settings.ollama_url, settings.agent_model)
+    try:
+        with db.connect(settings.database_url, autocommit=True) as conn:
+            results = run_batch(conn, congress.bill_context, llm, limit, only=bill)
+    finally:
+        congress.close()
+        llm.close()
+
+    for r in results:
+        area = r.policy_area or "-"
+        if r.model_policy_area and r.policy_area:
+            agrees = r.model_policy_area == r.policy_area
+            area += " (model agrees)" if agrees else f" (model said {r.model_policy_area})"
+        print()
+        print(f"{r.bill_id}  [{r.status}]  stage={r.stage}  attempts={r.attempts}  {area}")
+        if r.summary:
+            print(f"  {r.summary}")
+        for issue in r.issues:
+            print(f"  ! {issue.check}: {issue.detail}")
+        if r.error:
+            print(f"  ! {r.error}")
+    if any(r.status == "failed" for r in results):
+        raise SystemExit(1)
 
 
 def peek_source(settings: Settings, source: str, days: int, limit: int) -> None:

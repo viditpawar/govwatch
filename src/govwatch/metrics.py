@@ -122,6 +122,43 @@ LAST_AUDIT = Gauge(
     ["source"],
 )
 
+# --- agent ----------------------------------------------------------------------
+
+AGENT_STEP = Histogram(
+    "govwatch_agent_step_duration_seconds",
+    "Time spent in each step of summarizing one bill",
+    ["step"],
+    buckets=(0.05, 0.1, 0.25, 0.5, 1, 2, 4, 8, 15, 30, 60),
+)
+AGENT_BILLS = Counter(
+    "govwatch_agent_bills_total",
+    "Bills the agent finished, by outcome (pending_review, needs_attention, stub, failed)",
+    ["outcome"],
+)
+AGENT_VALIDATION_FAILURES = Counter(
+    "govwatch_agent_validation_failures_total",
+    "Model outputs rejected by the validation gate, by check",
+    ["check"],
+)
+AGENT_RETRIES = Counter(
+    "govwatch_agent_retries_total", "Second attempts after a rejected output", ["reason"]
+)
+AGENT_POLICY_AREA = Counter(
+    "govwatch_agent_policy_area_checks_total",
+    "Shadow check of the model's policy area against the official CRS one",
+    ["result"],
+)
+LLM_REQUESTS = Counter(
+    "govwatch_llm_requests_total", "Calls to the local model by outcome", ["model", "outcome"]
+)
+LLM_LATENCY = Histogram(
+    "govwatch_llm_request_duration_seconds",
+    "Latency of one model call",
+    ["model"],
+    buckets=(0.5, 1, 2, 3, 5, 8, 13, 20, 30, 60, 120),
+)
+LLM_TOKENS = Counter("govwatch_llm_tokens_total", "Tokens processed", ["model", "kind"])
+
 # --- worker --------------------------------------------------------------------
 
 HEARTBEAT = Gauge(

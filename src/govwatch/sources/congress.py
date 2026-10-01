@@ -6,6 +6,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from govwatch import metrics
+from govwatch.agent.facts import html_to_text
 from govwatch.sources.base import ApiClient, content_hash, parse_timestamp
 
 log = logging.getLogger(__name__)
@@ -75,6 +76,13 @@ def parse_bill(raw: dict[str, Any]) -> Bill:
         source_url=raw.get("url"),
         raw=raw,
     )
+
+
+@dataclass(frozen=True)
+class BillContext:
+    policy_area: str | None
+    crs_summary: str | None  # plain text, latest version
+    crs_summary_version: str | None
 
 
 class CongressClient:
@@ -150,6 +158,18 @@ class CongressClient:
             if not records or not pagination.get("next"):
                 return expected, malformed
             offset += len(records)
+
+    def bill_context(self, congress: int, bill_type: str, number: int) -> BillContext:
+        """Official policy area plus the latest CRS summary, if CRS has written one yet."""
+        base = f"bill/{congress}/{bill_type}/{number}"
+        detail = self.api.get_json(base, {"format": "json"}).get("bill") or {}
+        summaries = self.api.get_json(f"{base}/summaries", {"format": "json"}).get("summaries")
+        latest = max(summaries or [], key=lambda s: s.get("updateDate", ""), default=None)
+        return BillContext(
+            policy_area=(detail.get("policyArea") or {}).get("name"),
+            crs_summary=html_to_text(latest["text"]) if latest and latest.get("text") else None,
+            crs_summary_version=(latest or {}).get("versionCode"),
+        )
 
     def count_updated_bills(self, since: datetime, until: datetime) -> int:
         """How many bills congress.gov reports as updated in [since, until).

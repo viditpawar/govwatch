@@ -1,0 +1,64 @@
+{
+  "bill": {
+    "actions": {
+      "count": 3,
+      "url": "https://api.congress.gov/v3/bill/119/hr/9786/actions?format=json"
+    },
+    "committees": {
+      "count": 1,
+      "url": "https://api.congress.gov/v3/bill/119/hr/9786/committees?format=json"
+    },
+    "congress": 119,
+    "constitutionalAuthorityStatementText": "<pre>\n[Congressional Record Volume 172, Number 118 (Monday, July 20, 2026)]\n[House]\nFrom the Congressional Record Online through the Government Publishing Office [<a href=\"https://www.gpo.gov\">www.gpo.gov</a>]\nBy Ms. KAMLAGER-DOVE:\nH.R. 9786.\nCongress has the power to enact this legislation pursuant\nto the following:\nPursuant to clause 7 of Rule XI of the Rules of the House\nof Representatives, the following statement is submitted\nregarding the specific powers granted to Congress in the\nConstitution to enact the accompanying bill.\nThis bill is introduced pursuant to the powers granted to\nCongress under the General Welfare Clause (Art. 1 Sec. 8 Cl.\n1), the Commerce Clause (Art. 1 Sec. 8 Cl. 3), and the\nNecessary and Proper Clause (Art. 1Sec. 8Cl. 18). Further,\nthis statement of constitutional authority is made for the\nsole purpose of compliance with clause 7 of Rule XII of the\nRules of the House of Representatives and shall have no\nbearing on judicial review of the accompanying bill.\n[Page H4682]\n</pre>",
+    "cosponsors": {
+      "count": 6,
+      "countIncludingWithdrawnCosponsors": 6,
+      "url": "https://api.congress.gov/v3/bill/119/hr/9786/cosponsors?format=json"
+    },
+    "introducedDate": "2026-07-20",
+    "latestAction": {
+      "actionDate": "2026-07-20",
+      "text": "Referred to the House Committee on the Judiciary."
+    },
+    "legislationUrl": "https://www.congress.gov/bill/119th-congress/house-bill/9786",
+    "number": "9786",
+    "originChamber": "House",
+    "originChamberCode": "H",
+    "policyArea": {
+      "name": "Crime and Law Enforcement"
+    },
+    "relatedBills": {
+      "count": 1,
+      "url": "https://api.congress.gov/v3/bill/119/hr/9786/relatedbills?format=json"
+    },
+    "sponsors": [
+      {
+        "bioguideId": "K000400",
+        "district": 37,
+        "firstName": "Sydney",
+        "fullName": "Rep. Kamlager-Dove, Sydney [D-CA-37]",
+        "isByRequest": "N",
+        "lastName": "Kamlager-Dove",
+        "party": "D",
+        "state": "CA",
+        "url": "https://api.congress.gov/v3/member/K000400?format=json"
+      }
+    ],
+    "subjects": {
+      "count": 1,
+      "url": "https://api.congress.gov/v3/bill/119/hr/9786/subjects?format=json"
+    },
+    "textVersions": {
+      "count": 1,
+      "url": "https://api.congress.gov/v3/bill/119/hr/9786/text?format=json"
+    },
+    "title": "Judicial Integrity Act",
+    "titles": {
+      "count": 3,
+      "url": "https://api.congress.gov/v3/bill/119/hr/9786/titles?format=json"
+    },
+    "type": "HR",
+    "updateDate": "2026-09-29T08:05:21Z",
+    "updateDateIncludingText": "2026-09-29T08:05:21Z"
+  }
+}

@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     # re-ingest an audit window automatically when records turn up missing
     audit_auto_repair: bool = True
 
+    # agent (phase 2). runs against a local ollama; see decisions.md #37 for the model
+    ollama_url: str = "http://localhost:11434"
+    agent_model: str = "qwen2.5:3b"
+    agent_batch_size: int = Field(default=10, ge=1, le=500)
+
     # 0.0.0.0 so prometheus can reach it inside a container; use 127.0.0.1 for local dev
     metrics_host: str = "0.0.0.0"
     metrics_port: int = 9100
