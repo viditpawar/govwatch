@@ -22,6 +22,12 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # patch releases (3.12.x security fixes) come through automatically. a minor bump like
+    # 3.12 -> 3.14 also changes .python-version, uv.lock and what CI tests against, so it
+    # gets done as one deliberate change instead of a base image PR
+    ignore:
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
 
   - package-ecosystem: terraform
     directory: /infra
