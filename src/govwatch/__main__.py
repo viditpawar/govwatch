@@ -7,6 +7,7 @@ from govwatch import db
 from govwatch.config import Settings, get_settings
 from govwatch.sources.congress import CongressClient
 from govwatch.sources.regulations import RegulationsClient
+from govwatch.worker import Worker
 
 
 def main() -> None:
@@ -19,6 +20,9 @@ def main() -> None:
     peek.add_argument("source", choices=["congress", "regulations"])
     peek.add_argument("--days", type=int, default=1)
     peek.add_argument("--limit", type=int, default=10)
+    sub.add_parser("run", help="run the ingest worker until stopped")
+    ingest = sub.add_parser("ingest", help="run a single ingest cycle and exit")
+    ingest.add_argument("--source", choices=["congress", "regulations"])
     args = parser.parse_args()
 
     settings = get_settings()
@@ -34,6 +38,16 @@ def main() -> None:
             db.migrate(conn)
     elif args.command == "peek":
         peek_source(settings, args.source, args.days, args.limit)
+    elif args.command == "run":
+        Worker(settings).run_forever()
+    elif args.command == "ingest":
+        worker = Worker(settings)
+        try:
+            results = worker.run_once(only=args.source)
+        finally:
+            worker.close()
+        if any(r.status != "success" for r in results):
+            raise SystemExit(1)
 
 
 def peek_source(settings: Settings, source: str, days: int, limit: int) -> None:
