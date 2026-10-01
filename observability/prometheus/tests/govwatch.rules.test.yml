@@ -334,3 +334,40 @@ tests:
             exp_annotations:
               summary: a summary has been waiting for review for over 3 days
               runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchreviewqueuestale
+
+  - name: grounding drop, like the title-only regression
+    interval: 1m
+    input_series:
+      - series: 'govwatch_agent_source_support_median{window="baseline"}'
+        values: "0.77x120"
+      - series: 'govwatch_agent_source_support_median{window="recent"}'
+        values: "0.2x120"
+      - series: 'govwatch_agent_quality_samples{window="baseline"}'
+        values: "80x120"
+      - series: 'govwatch_agent_quality_samples{window="recent"}'
+        values: "40x120"
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: GovwatchAgentGroundingDrop
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: summaries are less grounded in their source text than in the baseline
+              runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchagentgroundingdrop
+
+  - name: normal wobble in grounding is not an alert
+    interval: 1m
+    input_series:
+      - series: 'govwatch_agent_source_support_median{window="baseline"}'
+        values: "0.77x120"
+      - series: 'govwatch_agent_source_support_median{window="recent"}'
+        values: "0.70x120"
+      - series: 'govwatch_agent_quality_samples{window="baseline"}'
+        values: "80x120"
+      - series: 'govwatch_agent_quality_samples{window="recent"}'
+        values: "40x120"
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: GovwatchAgentGroundingDrop
+        exp_alerts: []

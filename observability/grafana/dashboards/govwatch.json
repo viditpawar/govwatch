@@ -1543,7 +1543,7 @@
       "gridPos": {
         "x": 0,
         "y": 44,
-        "w": 8,
+        "w": 6,
         "h": 8
       },
       "targets": [
@@ -1602,9 +1602,9 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 8,
+        "x": 6,
         "y": 44,
-        "w": 8,
+        "w": 6,
         "h": 8
       },
       "targets": [
@@ -1646,8 +1646,89 @@
       }
     },
     {
-      "type": "timeseries",
+      "type": "stat",
       "id": 27,
+      "title": "Grounded in source (median)",
+      "description": "Share of summary words found in the CRS text, median over the window. About 0.75 normally; 0.20 when the model was shown only titles and invented the rest. Too noisy for one summary, reliable over many.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 44,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "govwatch_agent_source_support_median{window=\"recent\"}",
+          "legendFormat": "recent",
+          "editorMode": "code",
+          "instant": true,
+          "range": false
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "govwatch_agent_source_support_median{window=\"baseline\"}",
+          "legendFormat": "baseline",
+          "editorMode": "code",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.5
+              },
+              {
+                "color": "green",
+                "value": 0.65
+              }
+            ]
+          },
+          "decimals": 0,
+          "noValue": "no summaries yet"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "orientation": "horizontal"
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 28,
       "title": "Model tokens (per hour)",
       "description": "",
       "datasource": {
@@ -1655,9 +1736,9 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 16,
+        "x": 18,
         "y": 44,
-        "w": 8,
+        "w": 6,
         "h": 8
       },
       "targets": [
@@ -1698,7 +1779,7 @@
     },
     {
       "type": "table",
-      "id": 28,
+      "id": 29,
       "title": "Recent reviewer rejections",
       "description": "What humans caught that the validation gate didn't. Rejections the gate had not flagged are candidates for a new check.",
       "datasource": {
@@ -1790,7 +1871,7 @@
     },
     {
       "type": "row",
-      "id": 29,
+      "id": 30,
       "title": "Policy activity",
       "collapsed": false,
       "gridPos": {
@@ -1803,7 +1884,7 @@
     },
     {
       "type": "timeseries",
-      "id": 30,
+      "id": 31,
       "title": "Daily activity",
       "description": "Regulatory documents by posted date, bills by date of their latest action.",
       "datasource": {
@@ -1856,7 +1937,7 @@
     },
     {
       "type": "barchart",
-      "id": 31,
+      "id": 32,
       "title": "Most active agencies (7d)",
       "description": "",
       "datasource": {
@@ -1902,7 +1983,7 @@
     },
     {
       "type": "table",
-      "id": 32,
+      "id": 33,
       "title": "Comment periods closing in the next 14 days",
       "description": "Open regulations.gov comment periods closing soon. Click a title to open the document.",
       "datasource": {
@@ -2022,7 +2103,7 @@
     },
     {
       "type": "table",
-      "id": 33,
+      "id": 34,
       "title": "Latest bill actions",
       "description": "Most recent actions on bills, linked to congress.gov.",
       "datasource": {

@@ -211,6 +211,20 @@ the model behaves differently on the same kind of input.
 **Check:** a model or prompt change, or an Ollama update that changed default sampling
 settings. Re-run the benchmark from decisions.md #37 against a few known bills.
 
+## GovwatchAgentGroundingDrop
+
+**What it means:** summaries share fewer words with their CRS source text than they used to
+(the 7-day median is 0.15+ below the baseline). This is the signature of the model writing
+from its own knowledge instead of from the source. When the model was shown only titles, the
+median fell from 0.77 to 0.20, and one summary turned a SNAP bill into an oil spill bill.
+
+**Check:**
+- Is the CRS text actually reaching the prompt? A change in `build_prompt`, or CRS summaries
+  coming back empty, both produce this pattern.
+- Run `govwatch eval`. If the golden set's source support has dropped too, it's the prompt
+  or the model, not the incoming bills.
+- Read a few recent summaries next to their source in the review app.
+
 ## GovwatchReviewRejectionsHigh
 
 **What it means:** reviewers rejected over 30% of recent summaries (with at least 10 decisions).

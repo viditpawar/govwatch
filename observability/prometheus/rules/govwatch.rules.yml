@@ -271,6 +271,22 @@ groups:
           summary: the model's policy-area picks drifted while the incoming bills didn't
           runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchagentoutputdrift
 
+      # median share of summary words found in the source (decisions.md #55): 0.75-0.77 on
+      # the golden set normally, 0.20 when the model was only shown titles. agreement and
+      # the gate both missed that regression; this is the signal that catches it
+      - alert: GovwatchAgentGroundingDrop
+        expr: |
+          govwatch_agent_source_support_median{window="recent"}
+            < ignoring(window) govwatch_agent_source_support_median{window="baseline"} - 0.15
+          and ignoring(window) govwatch_agent_quality_samples{window="recent"} >= 30
+          and ignoring(window) govwatch_agent_quality_samples{window="baseline"} >= 30
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: summaries are less grounded in their source text than in the baseline
+          runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchagentgroundingdrop
+
       - alert: GovwatchReviewRejectionsHigh
         expr: |
           govwatch_review_rejection_ratio{window="recent"} > 0.3
