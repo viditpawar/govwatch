@@ -2,6 +2,8 @@ image:
   repository: ghcr.io/viditpawar/govwatch
   # defaults to the chart's appVersion
   tag: ""
+  # sha256:... - takes precedence over tag
+  digest: ""
   pullPolicy: IfNotPresent
 
 # maps to the GOVWATCH_* settings, see the README for what each one does
@@ -51,6 +53,8 @@ podSecurityContext:
   runAsNonRoot: true
   runAsUser: 10001
   runAsGroup: 10001
+  # group-owns the mounted secret files so the non-root user can read them (mode 0440)
+  fsGroup: 10001
   seccompProfile:
     type: RuntimeDefault
 

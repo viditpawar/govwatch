@@ -4,6 +4,7 @@ apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
   name: {{ include "govwatch.dbClusterName" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "govwatch.labels" . | nindent 4 }}
 spec:

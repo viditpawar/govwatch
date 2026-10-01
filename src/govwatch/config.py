@@ -1,3 +1,4 @@
+import os
 from functools import lru_cache
 
 from pydantic import Field, SecretStr
@@ -5,7 +6,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Runtime config. Everything comes from GOVWATCH_* env vars (or a local .env)."""
+    """Runtime config, from GOVWATCH_* env vars, a local .env, or secret files.
+
+    Secret files: if GOVWATCH_SECRETS_DIR is set, a file in it named after a setting
+    (e.g. GOVWATCH_CONGRESS_API_KEY) supplies that value. Kubernetes mounts the API keys
+    and database uri this way so they never sit in the process environment.
+    """
 
     model_config = SettingsConfigDict(env_prefix="GOVWATCH_", env_file=".env", extra="ignore")
 
@@ -13,7 +19,10 @@ class Settings(BaseSettings):
     congress_api_key: SecretStr
     regulations_api_key: SecretStr
 
-    database_url: str = "postgresql://govwatch:govwatch@localhost:5432/govwatch"
+    # repr=False: the uri carries the database password
+    database_url: str = Field(
+        default="postgresql://govwatch:govwatch@localhost:5432/govwatch", repr=False
+    )
 
     # how often the worker polls each source
     poll_interval_seconds: int = Field(default=900, ge=60)
@@ -34,4 +43,4 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    return Settings(_secrets_dir=os.environ.get("GOVWATCH_SECRETS_DIR"))

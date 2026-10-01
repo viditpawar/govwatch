@@ -4,6 +4,7 @@ apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: {{ include "govwatch.fullname" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "govwatch.labels" . | nindent 4 }}
     {{- with $m.serviceMonitor.labels }}
@@ -28,6 +29,7 @@ apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
   name: {{ include "govwatch.fullname" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "govwatch.labels" . | nindent 4 }}
     {{- with $m.prometheusRule.labels }}

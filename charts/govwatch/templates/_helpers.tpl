@@ -31,7 +31,11 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
 {{- define "govwatch.image" -}}
+{{- if .Values.image.digest -}}
+{{- printf "%s@%s" .Values.image.repository .Values.image.digest -}}
+{{- else -}}
 {{- printf "%s:%s" .Values.image.repository (default .Chart.AppVersion .Values.image.tag) -}}
+{{- end -}}
 {{- end -}}
 
 {{- define "govwatch.dbClusterName" -}}
@@ -50,23 +54,12 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- end -}}
 
-{{/* env shared by the migrate init container and the worker */}}
+{{/* env shared by the migrate init container and the worker. secrets aren't in here:
+they're mounted as files (see govwatch.secretsVolume) so they stay out of the process
+environment, child processes and crash dumps */}}
 {{- define "govwatch.env" -}}
-- name: GOVWATCH_CONGRESS_API_KEY
-  valueFrom:
-    secretKeyRef:
-      name: {{ include "govwatch.apiKeysSecret" . }}
-      key: congress-api-key
-- name: GOVWATCH_REGULATIONS_API_KEY
-  valueFrom:
-    secretKeyRef:
-      name: {{ include "govwatch.apiKeysSecret" . }}
-      key: regulations-api-key
-- name: GOVWATCH_DATABASE_URL
-  valueFrom:
-    secretKeyRef:
-      name: {{ include "govwatch.databaseSecret" . }}
-      key: {{ .Values.database.uriKey }}
+- name: GOVWATCH_SECRETS_DIR
+  value: /var/run/secrets/govwatch
 - name: GOVWATCH_POLL_INTERVAL_SECONDS
   value: {{ .Values.config.pollIntervalSeconds | quote }}
 - name: GOVWATCH_BACKFILL_DAYS
@@ -83,4 +76,25 @@ app.kubernetes.io/instance: {{ .Release.Name }}
   value: "0.0.0.0"
 - name: GOVWATCH_METRICS_PORT
   value: "9100"
+{{- end -}}
+
+{{/* api keys and the database uri, projected into one read-only directory with the file
+names the settings module expects */}}
+{{- define "govwatch.secretsVolume" -}}
+- name: secrets
+  projected:
+    defaultMode: 0440
+    sources:
+      - secret:
+          name: {{ include "govwatch.apiKeysSecret" . }}
+          items:
+            - key: congress-api-key
+              path: GOVWATCH_CONGRESS_API_KEY
+            - key: regulations-api-key
+              path: GOVWATCH_REGULATIONS_API_KEY
+      - secret:
+          name: {{ include "govwatch.databaseSecret" . }}
+          items:
+            - key: {{ .Values.database.uriKey }}
+              path: GOVWATCH_DATABASE_URL
 {{- end -}}

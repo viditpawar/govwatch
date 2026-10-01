@@ -2,8 +2,14 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ include "govwatch.fullname" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "govwatch.labels" . | nindent 4 }}
+  annotations:
+    # deliberate exceptions to the checkov baseline, with the reasoning next to them
+    checkov.io/skip1: CKV_K8S_11=No CPU limit on purpose. A CPU request plus a memory limit avoids CFS throttling on a bursty IO-bound worker
+    checkov.io/skip2: CKV_K8S_15=pullPolicy is a value. Images side-loaded into kind are in no registry, so Always would break them
+    checkov.io/skip3: CKV_K8S_43=Set image.digest to deploy by digest (CI does). Local kind builds use a content-hash tag instead
 spec:
   # one active ingester. advisory locks make a second replica safe, but it would
   # only sit there waiting for the lock
@@ -36,6 +42,10 @@ spec:
           args: ["migrate"]
           env:
             {{- include "govwatch.env" . | nindent 12 }}
+          volumeMounts:
+            - name: secrets
+              mountPath: /var/run/secrets/govwatch
+              readOnly: true
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           resources:
@@ -72,12 +82,16 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            - name: secrets
+              mountPath: /var/run/secrets/govwatch
+              readOnly: true
       # matches the worker's own shutdown: finish the current run, then exit
       terminationGracePeriodSeconds: 60
       volumes:
         - name: tmp
           emptyDir:
             sizeLimit: 16Mi
+        {{- include "govwatch.secretsVolume" . | nindent 8 }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
