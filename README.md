@@ -62,6 +62,11 @@ Every poll interval (15 min by default), the worker does this for each source:
 - Safe to run multiple workers: per-source advisory locks, abandoned-run cleanup
 - Graceful shutdown on SIGTERM (finishes the current run, then exits)
 - Prometheus metrics for lag, freshness, failure rate, throughput, API latency, and rate-limit headroom
+- SLO-based alerting (99% "pipeline keeping up") with multi-window burn-rate alerts, unit tested with `promtool`
+- Business-hours-aware freshness alerts that don't fire on quiet weekends
+- Grafana dashboard covering both pipeline health and policy activity: comment periods closing soon, latest bill actions, most active agencies
+- Least-privilege reporting layer: Grafana reads curated SQL views through a role that can't touch raw tables
+- Runbook entry for every alert
 - Multi-stage, non-root Docker image; one-command local stack with Prometheus and Grafana
 - Tests against recorded real API responses and a real Postgres
 
@@ -85,7 +90,7 @@ the design:
 
 - **Language:** Python 3.12, httpx, psycopg 3, pydantic-settings
 - **Storage:** PostgreSQL 17, with plain-SQL migrations and a small runner guarded by an advisory lock
-- **Observability:** prometheus-client, Prometheus 3, Grafana 12
+- **Observability:** prometheus-client, Prometheus 3 (recording rules, SLO burn-rate alerts, promtool tests), Grafana 12
 - **Packaging:** uv, Docker (multi-stage, non-root), Docker Compose
 - **Quality:** pytest, respx, ruff
 
@@ -107,7 +112,12 @@ govwatch/
 │   ├── config.py             # GOVWATCH_* settings
 │   └── __main__.py           # CLI
 ├── tests/                    # unit + Postgres-backed tests, recorded API fixtures
+├── observability/
+│   ├── prometheus/rules/     # recording rules, SLOs, alerts
+│   ├── prometheus/tests/     # promtool unit tests for the rules
+│   └── grafana/dashboards/   # dashboard json (shared by compose and k8s)
 ├── deploy/compose/           # Prometheus config, Grafana provisioning, db init
+├── docs/runbook.md           # one section per alert
 ├── compose.yaml
 ├── Dockerfile
 └── pyproject.toml
@@ -178,6 +188,51 @@ govwatch ingest [--source congress]      # one cycle, non-zero exit on failure
 govwatch peek regulations --days 1       # print recent records from the live API, no db writes
 ```
 
+## Dashboard
+
+Grafana opens straight to the govwatch dashboard, which has two sections:
+
+- **Pipeline health** (Prometheus): ingestion lag, newest-record age, 24h run success rate,
+  remaining SLO error budget, runs per hour, records seen vs actually changed, API latency
+  p50/p95, responses by status code, and rate-limit headroom.
+- **Policy activity** (Postgres): daily document and bill activity, the most active agencies
+  over the last 7 days, comment periods closing in the next 14 days (linked to
+  regulations.gov), and the latest bill actions (linked to congress.gov).
+
+The policy panels query a small set of reporting views (`v_open_comment_periods`,
+`v_bill_activity`, `v_daily_activity`, `v_agency_activity`) as `grafana_reader`. That role
+only holds `govwatch_readonly`, which has `SELECT` on those views and nothing else.
+
+## Alerting and SLOs
+
+**SLO:** each source's last successful ingest finished less than 30 minutes ago, 99% of
+the time over 30 days. That's about 7 hours of error budget a month.
+
+| Alert | Severity | Fires when |
+|---|---|---|
+| `GovwatchWorkerDown` | critical | Prometheus can't scrape the worker for 2m |
+| `GovwatchWorkerStalled` | critical | Worker loop hasn't completed a cycle in 1h |
+| `GovwatchLagBudgetBurnFast` | critical | Error budget burning at 14.4x (1h and 5m windows) |
+| `GovwatchLagBudgetBurnSlow` | warning | Error budget burning at 6x (6h and 30m windows) |
+| `GovwatchIngestFailing` | warning | 3+ failed runs for a source in 1h |
+| `GovwatchRegulationsDataStale` | warning | No new regulations.gov documents in 4h, **weekday business hours only** |
+| `GovwatchCongressDataStale` | warning | No congress.gov updates in 4 days (clears a long weekend) |
+| `GovwatchUpstreamErrors` | warning | Over 20% of API requests failing for 15m |
+| `GovwatchRateLimitLow` | warning | Under 10% of the api.data.gov hourly limit left |
+| `GovwatchMalformedRecords` | info | A source returned records that couldn't be parsed |
+
+Some details that matter:
+
+- Lag is computed from `last_over_time(...)`, so it **keeps increasing while the worker is
+  down** instead of disappearing along with the scrape target.
+- The burn-rate alerts follow the multi-window approach from the Google SRE workbook. A
+  short blip doesn't page, but a sustained outage does, within minutes.
+- The rules have unit tests (`observability/prometheus/tests`) covering, among other things,
+  that the regulations staleness alert fires on a Thursday afternoon and stays quiet on a
+  Saturday.
+
+Each alert links to its section in [docs/runbook.md](docs/runbook.md).
+
 ## Data model
 
 | Table | Purpose |
@@ -223,6 +278,13 @@ uv run ruff check . && uv run ruff format --check src tests
 The Postgres-backed tests use the `govwatch_test` database, which they wipe on every run,
 and are skipped automatically if Postgres isn't reachable.
 
+Validate and test the alert rules (no local Prometheus install needed):
+
+```bash
+docker run --rm -v "$PWD/observability:/obs:ro" --entrypoint promtool prom/prometheus:v3.5.0   check rules /obs/prometheus/rules/govwatch.rules.yml
+docker run --rm -v "$PWD/observability:/obs:ro" --entrypoint promtool prom/prometheus:v3.5.0   test rules /obs/prometheus/tests/govwatch.rules.test.yml
+```
+
 ## Roadmap
 
 **Phase 1: data platform**
@@ -231,7 +293,8 @@ and are skipped automatically if Postgres isn't reachable.
 - [x] Incremental ingest with cursors, locking, change detection
 - [x] Prometheus instrumentation
 - [x] Docker image and local Compose stack
-- [ ] Grafana dashboard and Prometheus alert rules
+- [x] Grafana dashboard, SLO burn-rate alerts, runbook
+- [ ] Completeness auditor: reconcile upstream record counts against what's stored
 - [ ] Helm chart
 - [ ] Terraform-provisioned kind cluster (cluster, monitoring stack, app)
 - [ ] GitHub Actions: lint, test, Trivy, Checkov, image publish, kind smoke test
