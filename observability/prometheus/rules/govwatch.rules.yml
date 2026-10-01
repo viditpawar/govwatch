@@ -141,6 +141,35 @@ groups:
           summary: "{{ $labels.source }} has under 10% of its api.data.gov rate limit left"
           runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchratelimitlow
 
+      # the auditor reconciles the source's own record count for the last few full
+      # days against what's stored. a shortfall means records were silently dropped
+      - alert: GovwatchDataIncomplete
+        expr: govwatch_completeness_ratio < 0.99
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.source }} is missing {{ with printf `govwatch_completeness_missing_records{source='%s'}` $labels.source | query }}{{ . | first | value }}{{ end }} records from its last audit window"
+          runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchdataincomplete
+
+      # auto-repair fixes the data, but a gap that keeps coming back is a bug in the
+      # ingest path. surface it instead of letting the repair hide it
+      - alert: GovwatchRepeatedRepairs
+        expr: increase(govwatch_completeness_repairs_total[24h]) >= 2
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.source }} needed {{ $value | printf `%.0f` }} auto-repairs in the last 24h"
+          runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchrepeatedrepairs
+
+      - alert: GovwatchCompletenessAuditStale
+        expr: time() - govwatch_completeness_last_audit_timestamp_seconds > 24 * 3600
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: "{{ $labels.source }} hasn't had a successful completeness audit in 24h"
+          runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchdataincomplete
+
       - alert: GovwatchMalformedRecords
         expr: increase(govwatch_ingest_malformed_records_total[1h]) > 0
         labels:

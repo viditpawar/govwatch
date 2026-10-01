@@ -124,3 +124,43 @@ tests:
             exp_annotations:
               summary: regulations has under 10% of its api.data.gov rate limit left
               runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchratelimitlow
+
+  - name: incomplete data alert names the shortfall
+    interval: 1m
+    input_series:
+      - series: 'govwatch_completeness_ratio{source="regulations"}'
+        values: "1 1 0.9806 0.9806"
+      - series: 'govwatch_completeness_missing_records{source="regulations"}'
+        values: "0 0 25 25"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: GovwatchDataIncomplete
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: GovwatchDataIncomplete
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              source: regulations
+            exp_annotations:
+              summary: regulations is missing 25 records from its last audit window
+              runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchdataincomplete
+
+  - name: one repair is fine, repeated repairs alert
+    interval: 1h
+    input_series:
+      - series: 'govwatch_completeness_repairs_total{source="congress"}'
+        values: "0 1 1 1 2 2"
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: GovwatchRepeatedRepairs
+        exp_alerts: []
+      - eval_time: 5h
+        alertname: GovwatchRepeatedRepairs
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              source: congress
+            exp_annotations:
+              summary: congress needed 2 auto-repairs in the last 24h
+              runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchrepeatedrepairs

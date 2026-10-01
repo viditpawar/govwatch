@@ -77,6 +77,39 @@ the source genuinely has no new data, or we're silently missing it.
   House/Senate calendars before digging further.
 - regulations.gov: federal holidays are quiet; a normal weekday afternoon should not be.
 
+## GovwatchDataIncomplete
+
+**What it means:** the completeness auditor asked the source how many records changed over
+the last few full days, and Postgres holds fewer. Records were dropped somewhere between
+the API and the database while every lag and freshness metric stayed green.
+
+The worker re-ingests the window automatically (`GOVWATCH_AUDIT_AUTO_REPAIR=true`), so
+this alert only stays up if the repair failed or is turned off.
+
+**Check:**
+```bash
+docker compose exec worker govwatch audit                # re-run now, no repair
+docker compose exec worker govwatch audit --repair       # re-ingest the window if short
+```
+- A small shortfall that clears on the next audit: probably a record updated upstream
+  mid-audit. Not a real problem.
+- A persistent shortfall that `--repair` fixes: something in the normal ingest path skips
+  records. Compare the window edges against the cursor and overlap settings.
+- A shortfall `--repair` can't fix: the API is returning a different set than its own count
+  reports (it happens). Check `govwatch peek` for the window.
+
+`GovwatchCompletenessAuditStale` means no audit has completed in 24h. Look for
+`audit failed` or `audit skipped` in the worker logs.
+
+## GovwatchRepeatedRepairs
+
+**What it means:** auto-repair had to re-ingest a window two or more times in 24 hours.
+The data is fine now, but whatever drops records is still happening.
+
+**Check:** the `ingest_runs` rows around the repaired windows, and worker logs for
+`records missing, re-ingesting`. A gap that recurs at the same boundary (midnight, page
+edges) points at the cursor overlap or the regulations.gov window-sliding logic.
+
 ## GovwatchUpstreamErrors
 
 **What it means:** over 20% of API requests to one source failed (5xx, 429, or no response)

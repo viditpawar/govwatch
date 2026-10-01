@@ -621,7 +621,7 @@
     {
       "type": "row",
       "id": 11,
-      "title": "Policy activity",
+      "title": "Data completeness",
       "collapsed": false,
       "gridPos": {
         "x": 0,
@@ -632,8 +632,378 @@
       "panels": []
     },
     {
-      "type": "timeseries",
+      "type": "stat",
       "id": 12,
+      "title": "Completeness (last audit)",
+      "description": "Share of the records each source reports for the last few full days that are actually stored. Anything under 100% means records were silently dropped.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 23,
+        "w": 5,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "govwatch_completeness_ratio",
+          "legendFormat": "{{source}}",
+          "editorMode": "code",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.99
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "orientation": "horizontal"
+      }
+    },
+    {
+      "type": "stat",
+      "id": 13,
+      "title": "Missing records",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 5,
+        "y": 23,
+        "w": 4,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "govwatch_completeness_missing_records",
+          "legendFormat": "{{source}}",
+          "editorMode": "code",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "orientation": "horizontal"
+      }
+    },
+    {
+      "type": "stat",
+      "id": 14,
+      "title": "Gaps found (7d)",
+      "description": "Audits that found missing records. Each one triggers a re-ingest of the window; gaps that keep coming back point at a bug in the ingest path.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "govwatch-db"
+      },
+      "gridPos": {
+        "x": 9,
+        "y": 23,
+        "w": 4,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "govwatch-db"
+          },
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table",
+          "rawSql": "SELECT s.source, count(a.*) FILTER (WHERE a.missing > 0) AS gaps\nFROM (VALUES ('congress'), ('regulations')) s(source)\nLEFT JOIN v_completeness_audits a\n  ON a.source = s.source AND a.audited_at > now() - interval '7 days'\nGROUP BY s.source ORDER BY s.source"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 2
+              }
+            ]
+          },
+          "decimals": 0,
+          "displayName": "${__data.fields.source}"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "orientation": "horizontal"
+      }
+    },
+    {
+      "type": "table",
+      "id": 15,
+      "title": "Recent audits",
+      "description": "Each audit asks the API how many records changed in the window and compares with Postgres.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "govwatch-db"
+      },
+      "gridPos": {
+        "x": 13,
+        "y": 23,
+        "w": 11,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "govwatch-db"
+          },
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table",
+          "rawSql": "SELECT audited_at AS \"audited\", source,\n       to_char(window_start, 'MM-DD') || ' to ' || to_char(window_end, 'MM-DD') AS \"window\",\n       upstream_count AS \"upstream\", local_count AS \"stored\", missing, completeness\nFROM v_completeness_audits\nORDER BY audited_at DESC\nLIMIT 20"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "audited"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              },
+              {
+                "id": "custom.width",
+                "value": 135
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "source"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 95
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "window"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 115
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "upstream"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 80
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "stored"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 70
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "missing"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 70
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "completeness"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "missing"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "type": "row",
+      "id": 16,
+      "title": "Policy activity",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 30,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "id": 17,
       "title": "Daily activity",
       "description": "Regulatory documents by posted date, bills by date of their latest action.",
       "datasource": {
@@ -642,7 +1012,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 23,
+        "y": 31,
         "w": 14,
         "h": 8
       },
@@ -686,7 +1056,7 @@
     },
     {
       "type": "barchart",
-      "id": 13,
+      "id": 18,
       "title": "Most active agencies (7d)",
       "description": "",
       "datasource": {
@@ -695,7 +1065,7 @@
       },
       "gridPos": {
         "x": 14,
-        "y": 23,
+        "y": 31,
         "w": 10,
         "h": 8
       },
@@ -732,7 +1102,7 @@
     },
     {
       "type": "table",
-      "id": 14,
+      "id": 19,
       "title": "Comment periods closing in the next 14 days",
       "description": "Open regulations.gov comment periods closing soon. Click a title to open the document.",
       "datasource": {
@@ -741,7 +1111,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 31,
+        "y": 39,
         "w": 24,
         "h": 9
       },
@@ -852,7 +1222,7 @@
     },
     {
       "type": "table",
-      "id": 15,
+      "id": 20,
       "title": "Latest bill actions",
       "description": "Most recent actions on bills, linked to congress.gov.",
       "datasource": {
@@ -861,7 +1231,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 40,
+        "y": 48,
         "w": 24,
         "h": 9
       },
