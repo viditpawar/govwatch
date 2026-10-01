@@ -84,6 +84,12 @@ Repairs are counted (`govwatch_completeness_repairs_total`), and repeated repair
 their own alert. Auto-repair keeps the data correct, but a gap that keeps coming back is
 still a bug, and it shouldn't be hidden by the fix.
 
+The auditor has already found a real problem. On a fresh Kubernetes deploy it reported
+5 bills missing, and a re-ingest didn't fix it. The cause wasn't the pipeline: congress.gov's
+CDN was serving a 16-minute-old cached *count* (`Age: 965`, `Cf-Cache-Status: HIT`) while
+the listing was fresh. Audit requests now bypass the cache and reject stale responses
+(see the design notes).
+
 ## Features
 
 - Incremental ingestion from congress.gov and regulations.gov with per-source cursors
@@ -118,6 +124,7 @@ the design:
 | A crash mid-run | Batches commit independently and the cursor doesn't move, so the next run safely covers the same window |
 | The API key showing up in logs | The key is sent as an `X-Api-Key` header, never as a query parameter |
 | A record re-updated upstream leaves the source's count window before it leaves ours | The auditor only counts a shortfall as missing; extra local rows are expected drift |
+| congress.gov sits behind a CDN that caches responses by URL for 30 min, **shared across all API users** (the key is a header, not part of the cache key) | Audit counts send a unique throwaway param so each call gets its own cache entry, and any count response with `Age` over 60s is rejected. Found when the auditor flagged 5 "missing" bills on a fresh ingest that were really a 16-minute-old cached count |
 
 ## Tech stack
 
@@ -125,6 +132,7 @@ the design:
 - **Storage:** PostgreSQL 17, with plain-SQL migrations and a small runner guarded by an advisory lock
 - **Observability:** prometheus-client, Prometheus 3 (recording rules, SLO burn-rate alerts, promtool tests), Grafana 12
 - **Packaging:** uv, Docker (multi-stage, non-root), Docker Compose
+- **Kubernetes:** Helm, CloudNativePG (Postgres operator), Prometheus Operator CRDs, NetworkPolicy
 - **Quality:** pytest, respx, ruff
 
 ## Project structure
@@ -150,6 +158,7 @@ govwatch/
 │   ├── prometheus/rules/     # recording rules, SLOs, alerts
 │   ├── prometheus/tests/     # promtool unit tests for the rules
 │   └── grafana/dashboards/   # dashboard json (shared by compose and k8s)
+├── charts/govwatch/          # Helm chart: worker, CloudNativePG Postgres, monitoring CRs
 ├── deploy/compose/           # Prometheus config, Grafana provisioning, db init
 ├── docs/runbook.md           # one section per alert
 ├── compose.yaml
@@ -215,6 +224,54 @@ docker compose exec postgres psql -U govwatch -c \
   "select source, status, records_seen, records_changed, api_requests, finished_at
      from ingest_runs order by id desc limit 10"
 ```
+
+## Kubernetes (Helm)
+
+The chart in [charts/govwatch](charts/govwatch) runs the worker on any cluster.
+
+```bash
+# cloudnative-pg operator, if you want the chart to provision postgres
+helm repo add cnpg https://cloudnative-pg.github.io/charts
+helm install cnpg cnpg/cloudnative-pg -n cnpg-system --create-namespace --wait
+
+kubectl create namespace govwatch
+kubectl -n govwatch create secret generic govwatch-api-keys \
+  --from-literal=congress-api-key=$KEY --from-literal=regulations-api-key=$KEY
+kubectl -n govwatch create secret generic grafana-reader --type=kubernetes.io/basic-auth \
+  --from-literal=username=grafana_reader --from-literal=password=$(openssl rand -hex 16)
+
+helm install govwatch charts/govwatch -n govwatch \
+  --set apiKeys.existingSecret=govwatch-api-keys \
+  --set database.cnpg.enabled=true \
+  --set database.cnpg.grafanaReader.passwordSecret=grafana-reader
+```
+
+With kube-prometheus-stack, also enable the ServiceMonitor, the PrometheusRule and the
+dashboard ConfigMap. The rules and dashboard are passed in from `observability/`, so
+Compose and Kubernetes always run the same files:
+
+```bash
+  --set monitoring.serviceMonitor.enabled=true \
+  --set monitoring.prometheusRule.enabled=true \
+  --set monitoring.dashboard.enabled=true \
+  --set-file monitoring.prometheusRule.rules=observability/prometheus/rules/govwatch.rules.yml \
+  --set-file monitoring.dashboard.json=observability/grafana/dashboards/govwatch.json
+```
+
+How the chart is set up:
+
+- **Migrations run in an init container,** not a Helm hook. Pre-install hooks run before the
+  chart's Secrets exist. Concurrent pods during a rollout are safe because the migration
+  runner holds a Postgres advisory lock.
+- **Postgres comes from CloudNativePG** (optional). It generates the app's connection
+  secret, and declares `govwatch_readonly` and `grafana_reader` as managed roles, so the app
+  user never needs `CREATEROLE`.
+- **The pod is locked down:** non-root, read-only root filesystem, all capabilities dropped,
+  `RuntimeDefault` seccomp, and no service account token.
+- **A NetworkPolicy** allows egress only to DNS, the database pods, and 443 (the two APIs),
+  and ingress only on the metrics port from the monitoring namespace. Tested on kind: port 80
+  egress and scrapes from other namespaces are blocked.
+- **`values.schema.json`** rejects bad config at install time, e.g. a poll interval under 60s.
 
 ## CLI
 
@@ -342,7 +399,7 @@ docker run --rm -v "$PWD/observability:/obs:ro" --entrypoint promtool prom/prome
 - [x] Docker image and local Compose stack
 - [x] Grafana dashboard, SLO burn-rate alerts, runbook
 - [x] Completeness auditor with self-healing re-ingest
-- [ ] Helm chart
+- [x] Helm chart (CloudNativePG Postgres, hardened pod, NetworkPolicy, monitoring CRs)
 - [ ] Terraform-provisioned kind cluster (cluster, monitoring stack, app)
 - [ ] GitHub Actions: lint, test, Trivy, Checkov, image publish, kind smoke test
 
