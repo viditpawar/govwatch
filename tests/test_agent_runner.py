@@ -7,7 +7,7 @@ import pytest
 from prometheus_client import REGISTRY
 
 from govwatch import db
-from govwatch.agent.llm import Generation, LLMError
+from govwatch.agent.llm import Generation, LLMError, LLMUnavailable
 from govwatch.agent.prompt import PROMPT_VERSION
 from govwatch.agent.runner import bills_needing_summary, run_batch
 from govwatch.ingest import upsert_bills
@@ -35,6 +35,9 @@ class FakeLLM:
     def __init__(self, *outputs):
         self.outputs = deque(outputs)
         self.prompts = []
+
+    def check(self):
+        pass
 
     def generate(self, prompt, schema):
         self.prompts.append(prompt)
@@ -167,3 +170,25 @@ class TestWorkSelection:
 def test_one_bill_failing_doesnt_stop_the_batch(conn):
     results = run_batch(conn, fetch(), FakeLLM(RuntimeError("boom"), GOOD), limit=10)
     assert sorted(r.status for r in results) == ["failed", "pending_review"]
+
+
+def test_ollama_not_running_fails_before_touching_any_bill(conn):
+    class Down(FakeLLM):
+        def check(self):
+            raise LLMUnavailable("can't reach Ollama. Start the Ollama app")
+
+    llm = Down(GOOD)
+    with pytest.raises(LLMUnavailable, match="Start the Ollama app"):
+        run_batch(conn, fetch(), llm, limit=10)
+    assert llm.prompts == []
+    assert summaries(conn) == []
+
+
+def test_ollama_going_away_mid_batch_stops_the_batch(conn):
+    llm = FakeLLM(GOOD, LLMUnavailable("ollama unreachable"), GOOD)
+    results = run_batch(conn, fetch(), llm, limit=10)
+
+    # first bill done, second hit the outage, nothing else attempted
+    assert [r.status for r in results] == ["pending_review", "failed"]
+    assert len(llm.prompts) == 2
+    assert len(summaries(conn)) == 1

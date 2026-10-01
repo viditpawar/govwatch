@@ -72,6 +72,18 @@ def test_acronym_of_a_name_spelled_out_in_the_source_is_grounded():
         "research on preventing it."
     )
     assert checks({**GOOD, "summary": summary}, source=source) == []
+    # second real false positive, found in the review UI (118-hr-4033): "USDA" for a source
+    # that only says "Department of Agriculture"
+    usda_source = (
+        "This bill pays costs incurred by states for certain Department of Agriculture programs."
+    )
+    usda = (
+        "The bill funds state agencies that run certain USDA food assistance programs nationwide."
+    )
+    assert checks({**GOOD, "summary": usda}, source=usda_source) == []
+    assert checks({**GOOD, "summary": usda.replace("USDA", "USPS")}, source=usda_source) == [
+        "ungrounded_acronym"
+    ]
     # but an agency that isn't there at all is still caught
     assert checks({**GOOD, "summary": summary.replace("CDC", "NIH")}, source=source) == [
         "ungrounded_acronym"

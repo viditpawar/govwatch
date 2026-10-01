@@ -18,6 +18,11 @@ class LLMError(Exception):
     pass
 
 
+class LLMUnavailable(LLMError):
+    """Ollama isn't there at all (not running, wrong URL, model not pulled). Retrying the
+    next bill won't help, so a batch stops instead of failing bill after bill."""
+
+
 @dataclass(frozen=True)
 class Generation:
     output: dict[str, Any]
@@ -46,7 +51,25 @@ class OllamaClient:
         self.max_retries = max_retries
         self.keep_alive = keep_alive
         self._sleep = sleep
+        self.base_url = base_url
         self._http = httpx.Client(base_url=base_url, timeout=timeout)
+
+    def check(self) -> None:
+        """Fail fast with an actionable message before a batch touches any bills."""
+        try:
+            resp = self._http.get("/api/tags", timeout=5.0)
+            resp.raise_for_status()
+        except httpx.HTTPError as exc:
+            metrics.LLM_REQUESTS.labels(self.model, "unavailable").inc()
+            raise LLMUnavailable(
+                f"can't reach Ollama at {self.base_url} ({type(exc).__name__}). "
+                "Start the Ollama app, or set GOVWATCH_OLLAMA_URL."
+            ) from exc
+        pulled = {m.get("name") for m in resp.json().get("models", [])}
+        if self.model not in pulled:
+            raise LLMUnavailable(
+                f"model {self.model} isn't pulled in Ollama. Run: ollama pull {self.model}"
+            )
 
     def generate(self, prompt: Prompt, schema: dict[str, Any]) -> Generation:
         body = {
@@ -67,7 +90,7 @@ class OllamaClient:
             except httpx.TransportError as exc:
                 metrics.LLM_REQUESTS.labels(self.model, "error").inc()
                 if last_try:
-                    raise LLMError(f"ollama unreachable: {exc}") from exc
+                    raise LLMUnavailable(f"ollama unreachable: {exc}") from exc
                 self._backoff(attempt, str(exc))
                 continue
 

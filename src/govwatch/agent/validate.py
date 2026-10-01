@@ -87,11 +87,17 @@ def validate(output: dict, source_text: str, stage: str) -> list[Issue]:
 
     acronyms = set(_ACRONYM.findall(summary)) - _COMMON_ACRONYMS
     initials = _name_initials(source_text)
-    unknown = sorted(
-        a
-        for a in acronyms
-        if a not in source_text and not any(a.replace("-", "") in i for i in initials)
-    )
+
+    def grounded(acronym: str) -> bool:
+        if acronym in source_text:
+            return True
+        letters = acronym.replace("-", "")
+        # federal agencies often carry an implied "U.S." the source leaves out:
+        # "Department of Agriculture" -> DA, which the model writes as USDA
+        candidates = [letters, letters[2:]] if letters.startswith("US") else [letters]
+        return any(c and c in i for c in candidates for i in initials)
+
+    unknown = sorted(a for a in acronyms if not grounded(a))
     if unknown:
         issues.append(
             Issue("ungrounded_acronym", f"acronyms not in the source text: {', '.join(unknown)}")

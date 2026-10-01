@@ -31,6 +31,10 @@ def main() -> None:
     agent = sub.add_parser("agent", help="summarize changed bills with the local model")
     agent.add_argument("--limit", type=int, help="max bills this run (default: settings)")
     agent.add_argument("--bill", help="summarize one bill, e.g. 119-hr-3270")
+    review = sub.add_parser("review", help="serve the human review queue")
+    # no auth on this app, so localhost unless you deliberately say otherwise
+    review.add_argument("--host", default="127.0.0.1")
+    review.add_argument("--port", type=int, default=8080)
     args = parser.parse_args()
 
     settings = get_settings()
@@ -48,6 +52,12 @@ def main() -> None:
         peek_source(settings, args.source, args.days, args.limit)
     elif args.command == "run":
         Worker(settings).run_forever()
+    elif args.command == "review":
+        import uvicorn
+
+        from govwatch.review.app import create_app
+
+        uvicorn.run(create_app(settings.database_url), host=args.host, port=args.port)
     elif args.command == "ingest":
         worker = Worker(settings)
         try:
@@ -78,7 +88,7 @@ def main() -> None:
 
 
 def run_agent(settings: Settings, limit: int, bill: str | None) -> None:
-    from govwatch.agent.llm import OllamaClient
+    from govwatch.agent.llm import LLMUnavailable, OllamaClient
     from govwatch.agent.runner import run_batch
 
     congress = CongressClient(settings.congress_api_key.get_secret_value())
@@ -86,6 +96,8 @@ def run_agent(settings: Settings, limit: int, bill: str | None) -> None:
     try:
         with db.connect(settings.database_url, autocommit=True) as conn:
             results = run_batch(conn, congress.bill_context, llm, limit, only=bill)
+    except LLMUnavailable as exc:
+        raise SystemExit(f"govwatch agent: {exc}") from None
     finally:
         congress.close()
         llm.close()

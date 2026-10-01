@@ -5,7 +5,7 @@ import pytest
 import respx
 from prometheus_client import REGISTRY
 
-from govwatch.agent.llm import LLMError, OllamaClient
+from govwatch.agent.llm import LLMError, LLMUnavailable, OllamaClient
 from govwatch.agent.prompt import OUTPUT_SCHEMA, build_prompt
 
 URL = "http://ollama.test"
@@ -94,3 +94,27 @@ def test_non_json_output_is_an_error(llm):
     )
     with pytest.raises(LLMError, match="wasn't JSON"):
         llm.generate(PROMPT, OUTPUT_SCHEMA)
+
+
+@respx.mock
+def test_check_explains_ollama_not_running(llm):
+    respx.get(f"{URL}/api/tags").mock(side_effect=httpx.ConnectError("refused"))
+    with pytest.raises(LLMUnavailable, match="Start the Ollama app"):
+        llm.check()
+
+
+@respx.mock
+def test_check_explains_model_not_pulled(llm):
+    respx.get(f"{URL}/api/tags").mock(
+        return_value=httpx.Response(200, json={"models": [{"name": "llama3.2:3b"}]})
+    )
+    with pytest.raises(LLMUnavailable, match=f"ollama pull {MODEL}"):
+        llm.check()
+
+
+@respx.mock
+def test_check_passes_when_model_is_there(llm):
+    respx.get(f"{URL}/api/tags").mock(
+        return_value=httpx.Response(200, json={"models": [{"name": MODEL}]})
+    )
+    llm.check()

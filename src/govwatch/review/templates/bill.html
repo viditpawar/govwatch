@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}{{ item.bill_id }}{% endblock %}
+{% block content %}
+<p><a href="/">&larr; queue</a></p>
+<h1>{{ item.title }}</h1>
+<p>
+  <a href="{{ item.url }}" target="_blank" rel="noopener">{{ item.bill_id }} on congress.gov</a>
+  · <span class="badge {{ item.status }}">{{ item.status.replace('_', ' ') }}</span>
+</p>
+
+{% if error %}<div class="card flash">{{ error }}</div>{% endif %}
+
+{% if item.validation_issues %}
+<div class="card">
+  <h2>Validation gate: rejected {{ item.attempts }} time(s)</h2>
+  <ul>{% for issue in item.validation_issues %}<li><strong>{{ issue.check }}</strong>: {{ issue.detail }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+<div class="grid">
+  <div class="card">
+    <h2>Agent summary</h2>
+    <p class="summary">{{ item.summary }}</p>
+    <dl>
+      <dt>Stage</dt><dd>{{ item.stage.replace('_', ' ') }} <span class="muted">(from the action text, not the model)</span></dd>
+      <dt>Latest action</dt><dd>{{ item.latest_action_text or '-' }}</dd>
+      <dt>Policy area</dt><dd>{{ item.policy_area or '-' }} <span class="muted">(official, CRS)</span></dd>
+      {% if item.model_policy_area %}
+      <dt>Model's pick</dt><dd><span class="badge {{ 'match' if item.model_policy_area == item.policy_area else 'mismatch' }}">{{ item.model_policy_area }}</span></dd>
+      {% endif %}
+    </dl>
+  </div>
+  <div class="card">
+    <h2>What the model was given: CRS summary{% if item.crs_summary_version %} (version {{ item.crs_summary_version }}){% endif %}</h2>
+    {% if item.source_truncated %}<p class="muted">Long summary: the model saw the first part only.</p>{% endif %}
+    <div class="source">{{ item.source_text or 'Not stored for this summary.' }}</div>
+  </div>
+</div>
+
+{% if reviewable %}
+<div class="card">
+  <h2>Decision</h2>
+  <form method="post" action="/summaries/{{ item.id }}/decision">
+    <input type="hidden" name="bill_id" value="{{ item.bill_id }}">
+    <textarea name="note" maxlength="2000" placeholder="Note (required when rejecting): what's wrong or missing?"></textarea>
+    <div class="row">
+      <label>Reviewer <input type="text" name="reviewer" value="{{ reviewer }}" required maxlength="100"></label>
+      <button class="approve" name="decision" value="approved">Approve</button>
+      <button class="reject" name="decision" value="rejected">Reject</button>
+    </div>
+  </form>
+</div>
+{% else %}
+<div class="card">
+  <h2>Decision</h2>
+  <p>{% if item.reviewed_at %}<span class="badge {{ item.status }}">{{ item.status }}</span> by {{ item.reviewer }} on {{ item.reviewed_at.strftime('%Y-%m-%d %H:%M') }}{% if item.review_note %}: “{{ item.review_note }}”{% endif %}{% else %}Not reviewable ({{ item.status }}).{% endif %}</p>
+</div>
+{% endif %}
+
+<p class="muted">{{ item.model }} · prompt {{ item.prompt_version }} · {{ '%.1f'|format(item.llm_seconds or 0) }}s · {{ item.prompt_tokens or 0 }} in / {{ item.completion_tokens or 0 }} out tokens · created {{ item.created_at.strftime('%Y-%m-%d %H:%M') }}</p>
+{% endblock %}

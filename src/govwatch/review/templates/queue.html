@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Review queue</h1>
+<p class="tabs">
+  <a href="/?status=all" class="{{ 'on' if status == 'all' }}">All waiting ({{ counts.get('pending_review', 0) + counts.get('needs_attention', 0) }})</a>
+  <a href="/?status=pending_review" class="{{ 'on' if status == 'pending_review' }}">Passed validation ({{ counts.get('pending_review', 0) }})</a>
+  <a href="/?status=needs_attention" class="{{ 'on' if status == 'needs_attention' }}">Failed validation ({{ counts.get('needs_attention', 0) }})</a>
+  <span class="muted">· approved {{ counts.get('approved', 0) }} · rejected {{ counts.get('rejected', 0) }} · stubs {{ counts.get('stub', 0) }}</span>
+</p>
+
+{% if items %}
+<div class="card" style="padding: 0">
+<table>
+  <thead><tr><th>Bill</th><th>Summary</th><th>Policy area</th><th>Status</th><th>Waiting since</th></tr></thead>
+  <tbody>
+  {% for i in items %}
+    <tr>
+      <td><a href="/bills/{{ i.bill_id }}">{{ i.bill_id }}</a><br><span class="muted">{{ i.stage.replace('_', ' ') }}</span></td>
+      <td><strong>{{ i.title[:110] }}</strong><br><span class="muted">{{ (i.summary or '')[:180] }}{% if (i.summary or '')|length > 180 %}…{% endif %}</span></td>
+      <td>{{ i.policy_area or '-' }}
+        {% if i.model_policy_area and i.policy_area %}
+          <br><span class="badge {{ 'match' if i.model_policy_area == i.policy_area else 'mismatch' }}">
+            {{ 'model agrees' if i.model_policy_area == i.policy_area else 'model disagrees' }}</span>
+        {% endif %}</td>
+      <td><span class="badge {{ i.status }}">{{ i.status.replace('_', ' ') }}</span>
+        {% if i.validation_issues %}<br><span class="muted">{{ i.validation_issues|length }} issue(s)</span>{% endif %}</td>
+      <td class="muted">{{ i.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<div class="card muted">Nothing waiting. Run <code>govwatch agent</code> to summarize changed bills.</div>
+{% endif %}
+{% endblock %}

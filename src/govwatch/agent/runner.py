@@ -18,9 +18,10 @@ import psycopg
 
 from govwatch import metrics
 from govwatch.agent.facts import derive_stage
-from govwatch.agent.llm import Generation, OllamaClient
+from govwatch.agent.llm import Generation, LLMError, LLMUnavailable, OllamaClient
 from govwatch.agent.prompt import OUTPUT_SCHEMA, PROMPT_VERSION, build_prompt, with_feedback
 from govwatch.agent.validate import Issue, validate
+from govwatch.sources.base import ApiError
 from govwatch.sources.congress import BillContext
 
 log = logging.getLogger(__name__)
@@ -55,6 +56,8 @@ class AgentResult:
     attempts: int = 0
     llm_seconds: float = 0.0
     crs_summary_version: str | None = None
+    # the CRS text the model was given, kept so a reviewer checks against exactly that
+    source_text: str | None = None
     source_truncated: bool = False
     generation: Generation | None = None
     error: str | None = None
@@ -111,6 +114,7 @@ def summarize_bill(bill: BillRow, fetch_context: FetchContext, llm: OllamaClient
         stage=derive_stage(bill.latest_action_text, bill.bill_type),
         policy_area=ctx.policy_area,
         crs_summary_version=ctx.crs_summary_version,
+        source_text=ctx.crs_summary,
     )
     if not ctx.crs_summary:
         return result
@@ -153,9 +157,9 @@ def store_result(conn: psycopg.Connection, bill: BillRow, result: AgentResult) -
             """
             INSERT INTO bill_summaries (
                 bill_id, source_hash, status, stage, summary, policy_area, model_policy_area,
-                crs_summary_version, source_truncated, validation_issues, attempts, model,
-                prompt_version, llm_seconds, prompt_tokens, completion_tokens)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                crs_summary_version, source_text, source_truncated, validation_issues,
+                attempts, model, prompt_version, llm_seconds, prompt_tokens, completion_tokens)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 bill.bill_id,
@@ -166,6 +170,7 @@ def store_result(conn: psycopg.Connection, bill: BillRow, result: AgentResult) -
                 result.policy_area,
                 result.model_policy_area,
                 result.crs_summary_version,
+                result.source_text,
                 result.source_truncated,
                 json.dumps([{"check": i.check, "detail": i.detail} for i in result.issues]),
                 result.attempts,
@@ -192,13 +197,29 @@ def run_batch(
         bills = bills_needing_summary(conn, limit)
     log.info("agent: %d bill(s) to summarize", len(bills))
 
+    if not bills:
+        return []
+    # one clear error up front beats a traceback per bill when ollama isn't running
+    llm.check()
+
     results = []
     for bill in bills:
         try:
             with step("total"):
                 result = summarize_bill(bill, fetch_context, llm)
             store_result(conn, bill, result)
-        except Exception as exc:  # one bad bill (or a model outage) mustn't stop the batch
+        except LLMUnavailable as exc:
+            # ollama went away mid-batch: stop here. nothing was stored for this bill, so it
+            # and the rest are picked up by the next run
+            log.error("%s: stopping batch, model unavailable: %s", bill.bill_id, exc)
+            metrics.AGENT_BILLS.labels("failed").inc()
+            results.append(AgentResult(bill.bill_id, status="failed", error=str(exc)))
+            break
+        except (LLMError, ApiError) as exc:
+            # expected failure modes, already explained by the message
+            log.error("%s: agent failed: %s", bill.bill_id, exc)
+            result = AgentResult(bill.bill_id, status="failed", error=str(exc))
+        except Exception as exc:  # a real bug: keep the traceback, carry on with the batch
             log.exception("%s: agent failed", bill.bill_id)
             result = AgentResult(
                 bill.bill_id, status="failed", error=f"{type(exc).__name__}: {exc}"

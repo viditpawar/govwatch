@@ -1,5 +1,6 @@
 """All prometheus metrics live here so the full set is easy to review in one place."""
 
+import contextlib
 from typing import TYPE_CHECKING
 
 import psycopg
@@ -159,6 +160,29 @@ LLM_LATENCY = Histogram(
 )
 LLM_TOKENS = Counter("govwatch_llm_tokens_total", "Tokens processed", ["model", "kind"])
 
+# --- human review ---------------------------------------------------------------
+
+REVIEW_DECISIONS = Counter(
+    "govwatch_review_decisions_total",
+    "Reviewer verdicts, by decision and by what the validation gate had said",
+    ["decision", "from_status"],
+)
+REVIEW_LATENCY = Histogram(
+    "govwatch_review_time_to_decision_seconds",
+    "From summary created to reviewed",
+    buckets=(60, 300, 900, 3600, 4 * 3600, 12 * 3600, 86400, 3 * 86400, 7 * 86400),
+)
+# read back from the database (like the lag gauges), so they're right after a restart
+REVIEW_QUEUE = Gauge(
+    "govwatch_review_queue_bills", "Bills whose current summary is in a status", ["status"]
+)
+REVIEW_QUEUE_OLDEST = Gauge(
+    "govwatch_review_queue_oldest_timestamp_seconds",
+    "Creation time of the oldest summary still waiting, by status",
+    ["status"],
+)
+REVIEW_STATUSES = ("pending_review", "needs_attention", "stub", "approved", "rejected")
+
 # --- worker --------------------------------------------------------------------
 
 HEARTBEAT = Gauge(
@@ -181,6 +205,8 @@ def init_labels() -> None:
             AUDITS.labels(source, status)
         REPAIRS.labels(source)
         REPAIRED_RECORDS.labels(source)
+    for status in REVIEW_STATUSES:
+        REVIEW_QUEUE.labels(status)
 
 
 def record_run(result: "RunResult") -> None:
@@ -226,3 +252,21 @@ def refresh_from_db(conn: psycopg.Connection) -> None:
         COMPLETENESS_RATIO.labels(source).set(1.0 if upstream == 0 else 1 - missing / upstream)
         MISSING_RECORDS.labels(source).set(missing)
         LAST_AUDIT.labels(source).set(audited_at.timestamp())
+
+    queue = {
+        status: (n, oldest)
+        for status, n, oldest in conn.execute(
+            "SELECT status, bills, oldest_created_at FROM v_review_queue"
+        ).fetchall()
+    }
+    for status in REVIEW_STATUSES:
+        n, oldest = queue.get(status, (0, None))
+        REVIEW_QUEUE.labels(status).set(n)
+        if status not in ("pending_review", "needs_attention"):
+            continue
+        if oldest:
+            REVIEW_QUEUE_OLDEST.labels(status).set(oldest.timestamp())
+        else:
+            # nothing waiting: drop the series so an "oldest is too old" alert clears
+            with contextlib.suppress(KeyError):
+                REVIEW_QUEUE_OLDEST.remove(status)
