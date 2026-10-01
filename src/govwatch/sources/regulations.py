@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from govwatch import metrics
 from govwatch.sources.base import ApiClient, ApiError, content_hash, parse_timestamp
 
 log = logging.getLogger(__name__)
@@ -117,6 +118,7 @@ class RegulationsClient:
                         doc = parse_document(raw)
                     except MalformedRecord as exc:
                         self.malformed += 1
+                        metrics.MALFORMED.labels("regulations").inc()
                         log.warning("regulations: skipping record: %s", exc)
                         continue
 

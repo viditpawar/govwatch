@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     # how far back to go on the very first run, before any cursor exists
     backfill_days: int = Field(default=7, ge=1, le=365)
 
+    # 0.0.0.0 so prometheus can reach it inside a container; use 127.0.0.1 for local dev
+    metrics_host: str = "0.0.0.0"
     metrics_port: int = 9100
     log_level: str = "INFO"
 

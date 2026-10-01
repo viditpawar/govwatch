@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
 
+from govwatch import metrics
 from govwatch.sources.base import ApiClient, content_hash, parse_timestamp
 
 log = logging.getLogger(__name__)
@@ -102,6 +103,7 @@ class CongressClient:
                     yield parse_bill(raw)
                 except MalformedRecord as exc:
                     self.malformed += 1
+                    metrics.MALFORMED.labels("congress").inc()
                     log.warning("congress: skipping record: %s", exc)
 
             if not records or not (data.get("pagination") or {}).get("next"):

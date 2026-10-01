@@ -1,4 +1,5 @@
 import logging
+import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -7,6 +8,7 @@ from typing import Any
 import psycopg
 from psycopg.types.json import Jsonb
 
+from govwatch import metrics
 from govwatch.sources.base import ApiClient
 from govwatch.sources.congress import Bill
 from govwatch.sources.regulations import RegulatoryDocument
@@ -38,6 +40,7 @@ class RunResult:
     api_requests: int = 0
     newest_record_at: datetime | None = None
     error: str | None = None
+    duration_seconds: float = 0.0
 
 
 def run_ingest(
@@ -68,6 +71,7 @@ def run_ingest(
         log.info("%s: ingesting %s -> %s", source.name, start.isoformat(), now.isoformat())
 
         requests_before = source.api.requests_made
+        started = time.monotonic()
         try:
             batch: list[Any] = []
             for record in source.fetch(start, now):
@@ -91,7 +95,9 @@ def run_ingest(
             result.error = f"{type(exc).__name__}: {exc}"
         finally:
             result.api_requests = source.api.requests_made - requests_before
+            result.duration_seconds = time.monotonic() - started
             _finish_run(conn, run_id, result)
+            metrics.record_run(result)
 
         log.info(
             "%s: %s, %d seen, %d changed, %d requests",

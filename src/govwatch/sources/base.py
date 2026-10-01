@@ -9,7 +9,7 @@ from typing import Any
 
 import httpx
 
-from govwatch import __version__
+from govwatch import __version__, metrics
 
 log = logging.getLogger(__name__)
 
@@ -55,20 +55,27 @@ class ApiClient:
     def get_json(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
         for attempt in range(self.max_retries + 1):
             last_try = attempt == self.max_retries
+            started = time.perf_counter()
             try:
                 resp = self._http.get(path, params=params)
             except httpx.TransportError as exc:
+                metrics.API_LATENCY.labels(self.source).observe(time.perf_counter() - started)
+                metrics.API_REQUESTS.labels(self.source, "error").inc()
                 if last_try:
                     raise ApiError(f"{self.source}: {path} failed: {exc}") from exc
+                metrics.API_RETRIES.labels(self.source, type(exc).__name__).inc()
                 delay = self._backoff(attempt)
                 log.warning("%s: %s on %s, retrying in %.1fs", self.source, exc, path, delay)
                 self._sleep(delay)
                 continue
 
+            metrics.API_LATENCY.labels(self.source).observe(time.perf_counter() - started)
+            metrics.API_REQUESTS.labels(self.source, str(resp.status_code)).inc()
             self.requests_made += 1
             self._track_ratelimit(resp)
 
             if resp.status_code in RETRYABLE_STATUSES and not last_try:
+                metrics.API_RETRIES.labels(self.source, str(resp.status_code)).inc()
                 delay = self._retry_after(resp) or self._backoff(attempt)
                 log.warning(
                     "%s: HTTP %s on %s, retrying in %.1fs",
@@ -102,6 +109,7 @@ class ApiClient:
         value = resp.headers.get("X-Ratelimit-Remaining")
         if value and value.isdigit():
             self.ratelimit_remaining = int(value)
+            metrics.RATELIMIT_REMAINING.labels(self.source).set(self.ratelimit_remaining)
 
 
 def content_hash(fields: dict[str, Any]) -> str:
