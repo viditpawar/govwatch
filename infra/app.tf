@@ -50,6 +50,14 @@ resource "helm_release" "govwatch" {
       backfillDays        = var.backfill_days
       pollIntervalSeconds = var.poll_interval_seconds
     }
+    agent = {
+      enabled   = var.agent_enabled
+      ollamaUrl = var.ollama_url
+    }
+    review = {
+      enabled = true
+      service = { type = "NodePort", nodePort = 30080 }
+    }
     apiKeys = {
       existingSecret = kubernetes_secret_v1.api_keys.metadata[0].name
     }

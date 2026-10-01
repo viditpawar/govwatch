@@ -22,6 +22,13 @@ resource "kind_cluster" "this" {
         host_port      = var.host_ports.prometheus
         listen_address = "127.0.0.1"
       }
+      # the review app has no authentication (decisions.md #46), so it's only ever
+      # published on loopback
+      extra_port_mappings {
+        container_port = 30080
+        host_port      = var.host_ports.review
+        listen_address = "127.0.0.1"
+      }
     }
   }
 }

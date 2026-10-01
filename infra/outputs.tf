@@ -12,6 +12,11 @@ output "prometheus_url" {
   value = "http://localhost:${var.host_ports.prometheus}"
 }
 
+output "review_url" {
+  description = "Human review queue for agent summaries."
+  value       = "http://localhost:${var.host_ports.review}"
+}
+
 output "grafana_admin_password" {
   description = "Grafana admin password (user: admin). Read with: terraform output -raw grafana_admin_password"
   value       = random_password.grafana_admin.result

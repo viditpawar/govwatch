@@ -58,15 +58,29 @@ variable "poll_interval_seconds" {
 }
 
 variable "host_ports" {
-  description = "Ports on localhost that Grafana and Prometheus are published on."
+  description = "Ports on localhost (loopback only) that Grafana, Prometheus and the review app are published on."
   type = object({
     grafana    = number
     prometheus = number
+    review     = number
   })
   default = {
     grafana    = 30300
     prometheus = 30090
+    review     = 30080
   }
+}
+
+variable "agent_enabled" {
+  description = "Run the summarization agent in the worker. Needs Ollama reachable from the pods."
+  type        = bool
+  default     = true
+}
+
+variable "ollama_url" {
+  description = "Where the pods reach Ollama. On Docker Desktop, kind pods reach the host as host.docker.internal."
+  type        = string
+  default     = "http://host.docker.internal:11434"
 }
 
 variable "chart_versions" {
