@@ -55,6 +55,10 @@ entry stays and is marked superseded, so the reasoning history is kept.
 | 47 | [Review rules: FIFO, reasons for rejections, no overwrites](#47-review-rules-fifo-reasons-for-rejections-no-overwrites) | Review |
 | 48 | [Store the exact source text the model saw](#48-store-the-exact-source-text-the-model-saw) | Review |
 | 49 | [Fail fast when the model is unavailable](#49-fail-fast-when-the-model-is-unavailable) | Agent |
+| 50 | [The agent runs inside the worker loop](#50-the-agent-runs-inside-the-worker-loop) | AgentOps |
+| 51 | [Quality and drift from stored summaries, recent vs baseline](#51-quality-and-drift-from-stored-summaries-recent-vs-baseline) | AgentOps |
+| 52 | [Separate input drift from output drift](#52-separate-input-drift-from-output-drift) | AgentOps |
+| 53 | [Each process exports only its own metrics](#53-each-process-exports-only-its-own-metrics) | Observability |
 
 ---
 
@@ -868,4 +872,91 @@ in that batch:
 - A missing dependency isn't a per-bill failure. Treating it like one also inflates the
   `failed` count, which would make the step 15 failure-rate alerts fire for the wrong reason.
 - #42 still holds for per-bill problems: one bad bill doesn't stop the batch.
+
+## 50. The agent runs inside the worker loop
+
+**Date:** 2026-10-01 · **Status:** accepted
+
+**Decision:**
+- With `GOVWATCH_AGENT_ENABLED=true`, the worker runs one agent batch (25 bills by default)
+  after each ingest cycle and its audits.
+- In Compose, the worker reaches Ollama on the host via `host.docker.internal`, since the
+  model needs the GPU.
+- `govwatch agent` still exists for one-off runs.
+
+**Why:**
+- Run only from the CLI, the agent's metrics (per-step latency, model latency, gate
+  rejections) died with the process, so nothing ever scraped them. That's the same reason
+  the worker isn't a CronJob (#3).
+- 25 bills every 15 minutes is far more than the ~350 changed bills a day, so the queue keeps
+  up, and each cycle's agent work stays bounded (25 × about 2s).
+- If Ollama is down, the batch is skipped (#49) and ingestion carries on. The model being
+  unavailable must never stop the data pipeline.
+
+## 51. Quality and drift from stored summaries, recent vs baseline
+
+**Date:** 2026-10-01 · **Status:** accepted, thresholds provisional
+
+**Decision:**
+- Quality signals are computed from `bill_summaries` after every cycle: policy-area agreement,
+  gate failure rate, summary length, reviewer rejection rate, and policy-area distribution.
+- Each is computed for a recent window (7 days) and a baseline (the 30 days before), and
+  alerts compare the two.
+- Every comparison needs at least 30 summaries in each window (10 reviewer decisions for the
+  rejection alert).
+
+**Why:**
+- In-process counters reset on restart and miss CLI runs. The database has every summary ever
+  made, so "agreement over the last 7 days" is an exact query instead of an approximation from
+  counters.
+- Comparing against a baseline instead of a fixed number means the alerts ask "is the model
+  behaving differently than it did?", which is what drift actually is.
+- The minimum sample sizes stop a quiet week from producing alarming percentages out of a
+  handful of bills. Rule tests cover both firing and not firing.
+- **The thresholds are provisional.** Agreement drop 15 points, gate failures 15%, output
+  drift 0.25, rejections 30%. They're set from the first live batches (58% agreement, about
+  1-2% gate failures), not from a month of history. They should be re-tuned once there is
+  one; this entry gets superseded when they are.
+
+## 52. Separate input drift from output drift
+
+**Date:** 2026-10-01 · **Status:** accepted
+
+**Decision:**
+- Measure two distribution shifts: the official policy areas of incoming bills (input), and
+  the model's policy-area picks (output).
+- Alert only when output drifts while input doesn't (Jensen-Shannon divergence over 0.25 on
+  output and under 0.1 on input).
+
+**Why:**
+- Congress's agenda moves: an appropriations season, a run of commemorative resolutions. When
+  the bills change topic, the model's picks *should* change too.
+- Alerting on output drift alone would fire every time the news changed.
+- Output moving while input stays put is the signature of the model or prompt changing,
+  which is the thing worth waking someone for.
+- Jensen-Shannon rather than KL divergence: it's symmetric and bounded 0–1, so one threshold
+  works whatever the volume, and it handles categories that appear in only one window.
+
+## 53. Each process exports only its own metrics
+
+**Date:** 2026-10-01 · **Status:** accepted
+
+**Decision:**
+- The review app serves its metrics from its own Prometheus registry, so it exports only
+  review metrics.
+- `govwatch_llm_up` carries a `model` label, so the series only exists once the agent has
+  checked.
+- Alerts on worker-only metrics are pinned to `job="govwatch"`.
+
+**Why:**
+- The review app (step 14) imported the shared metrics module and served the default
+  registry. That published *every* govwatch metric from the review process, including the
+  worker heartbeat gauge at its initial value of 0.
+- Prometheus scrapes the review app as its own job, so it saw a heartbeat of 0 for
+  `job="review"`, and `GovwatchWorkerStalled` would have fired permanently with a healthy
+  worker. An unlabeled `govwatch_llm_up` would have reported "down" the same way.
+- It was found while writing the agent alerts, before any alert fired.
+- There's now a test that the review app's `/metrics` contains none of the worker's metrics,
+  shown to fail with the old behavior. There's also a rule test that a heartbeat of 0 from
+  `job="review"` doesn't fire.
 

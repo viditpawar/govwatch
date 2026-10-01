@@ -215,7 +215,8 @@ GOVWATCH_BACKFILL_DAYS=7             # how far back the very first run goes
 | `GOVWATCH_AUDIT_AUTO_REPAIR` | `true` | Re-ingest an audit window when records are missing |
 | `GOVWATCH_OLLAMA_URL` | `http://localhost:11434` | Local Ollama for the agent |
 | `GOVWATCH_AGENT_MODEL` | `qwen2.5:3b` | Model the agent uses (see decisions.md #37) |
-| `GOVWATCH_AGENT_BATCH_SIZE` | `10` | Max bills summarized per agent run |
+| `GOVWATCH_AGENT_ENABLED` | `false` | Run an agent batch after each ingest cycle (on in Compose) |
+| `GOVWATCH_AGENT_BATCH_SIZE` | `25` | Max bills summarized per agent run |
 | `GOVWATCH_METRICS_HOST` / `_PORT` | `0.0.0.0` / `9100` | Bind address for `/metrics` and `/healthz` |
 | `GOVWATCH_LOG_LEVEL` | `INFO` | Python log level |
 
@@ -390,7 +391,7 @@ govwatch review [--host H] [--port P]    # human review queue on 127.0.0.1:8080 
 govwatch peek regulations --days 1       # print recent records from the live API, no db writes
 ```
 
-## Agent and human review (Phase 2, in progress)
+## Agent and human review (Phase 2)
 
 A local model drafts plain-language summaries of changed bills. Nothing reaches an analyst
 until a person has approved it.
@@ -422,6 +423,33 @@ From the first live batches on real bills:
 - The gate caught an invented fiscal year that a reader could easily have repeated.
 - Reviewing real output turned up two gate false positives (`CDC`, `USDA`). Both were fixed
   and are now tests.
+
+### AgentOps
+
+The agent runs inside the worker loop, so it's monitored like any other service:
+
+| Signal | Metric | Alert |
+|---|---|---|
+| Model availability | `govwatch_llm_up{model}` | `GovwatchLLMDown` (30m) |
+| Model latency | `govwatch_llm_request_duration_seconds` | `GovwatchLLMSlow` (p95 > 15s, i.e. spilled to CPU) |
+| Per-step latency | `govwatch_agent_step_duration_seconds{step}` | dashboard |
+| Failures and retries | `govwatch_agent_bills_total{outcome}`, `govwatch_agent_retries_total` | `GovwatchAgentFailing` |
+| Gate rejections | `govwatch_agent_validation_failures_total{check}` | `GovwatchAgentGateFailuresHigh` |
+| Accuracy vs ground truth | `govwatch_agent_policy_area_agreement{window}` | `GovwatchAgentAgreementDrop` |
+| Drift | `govwatch_agent_policy_area_drift{kind=input,output}` | `GovwatchAgentOutputDrift` |
+| Human verdicts | `govwatch_review_rejection_ratio{window}` | `GovwatchReviewRejectionsHigh` |
+| Queue health | `govwatch_review_queue_bills`, oldest age | `GovwatchReviewQueueStale` |
+
+- **Drift alerts compare windows, not fixed numbers.** Each signal is computed for the last 7
+  days and for the 30 days before, from the stored summaries, and alerts fire on the change.
+  Every comparison needs at least 30 summaries, so a quiet week can't trip them.
+- **Input and output drift are separated.** When Congress's agenda shifts, the model's policy
+  areas should shift too. `GovwatchAgentOutputDrift` only fires when the model's picks move
+  and the incoming bills' official areas don't. That points at the model or prompt changing,
+  not the news.
+- **The "Recent reviewer rejections" panel shows what humans caught that the gate didn't.**
+  Those are the candidates for the next validation check.
+- All of the agent alerts are unit tested with promtool, including the "don't fire" cases.
 
 The reasoning for each design choice is in [decisions.md](decisions.md) (#37 onwards).
 
@@ -548,9 +576,9 @@ docker run --rm -v "$PWD/observability:/obs:ro" --entrypoint promtool prom/prome
 
 **Phase 2: agent layer + AgentOps**
 
-- [ ] Local LLM agent (Ollama) that summarizes and tags newly changed bills
-- [ ] Per-step latency, retry and failure metrics for the agent
-- [ ] Output validation gate and drift alerts before a human-review queue
+- [x] Local LLM agent (Ollama) that summarizes changed bills, grounded in CRS summaries
+- [x] Per-step latency, retry and failure metrics for the agent
+- [x] Output validation gate, drift alerts, and a human review queue
 
 ## License
 
