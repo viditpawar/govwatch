@@ -61,6 +61,8 @@ entry stays and is marked superseded, so the reasoning history is kept.
 | 53 | [Each process exports only its own metrics](#53-each-process-exports-only-its-own-metrics) | Observability |
 | 54 | [A golden-set model eval in CI](#54-a-golden-set-model-eval-in-ci) | AgentOps |
 | 55 | [Measure grounding, because nothing else caught a title-only regression](#55-measure-grounding-because-nothing-else-caught-a-title-only-regression) | AgentOps |
+| 56 | [The agent in Kubernetes uses the host's Ollama](#56-the-agent-in-kubernetes-uses-the-hosts-ollama) | Platform |
+| 57 | [Component labels on every selector](#57-component-labels-on-every-selector) | Platform |
 
 ---
 
@@ -1029,4 +1031,54 @@ The balanced number is the honest one.
 - It's a deliberately simple lexical measure, run with no extra model. A stronger version
   would use an entailment model or a second LLM as a judge. That's worth it if this ever
   becomes more than a local tool.
+
+## 56. The agent in Kubernetes uses the host's Ollama
+
+**Date:** 2026-10-01 · **Status:** accepted for the local setup
+
+**Decision:**
+- On kind, the agent in the worker pod calls Ollama on the host machine at
+  `http://host.docker.internal:11434`, instead of running Ollama as a pod.
+- The worker's NetworkPolicy gets one extra egress rule for that port, only when
+  `agent.enabled` is set.
+- The review app runs as its own Deployment, published through a NodePort that the kind
+  cluster maps to `127.0.0.1:30080` only.
+
+**Why:**
+- The model needs the GPU. kind runs inside Docker Desktop's VM, and passing an NVIDIA GPU
+  through Docker Desktop into kind into a pod is fragile. An Ollama pod on the CPU would be
+  about 15x slower (16s vs 1s per bill, measured in #54).
+- Before building on it, I checked that kind pods can reach the host at all: from a busybox
+  pod, `host.docker.internal` resolved to `192.168.65.254` and Ollama answered.
+- A real cluster would run Ollama (or vLLM) on a GPU node pool as an in-cluster Service, and
+  the egress rule would become a pod selector. The chart's `agent.ollamaUrl` and
+  `agent.ollamaPort` already allow that without template changes.
+- The review app has no authentication (#46), so it's only published on loopback, the same
+  rule as Compose.
+
+**Verified with a full `terraform apply`:**
+- The in-cluster worker reached host Ollama through its NetworkPolicy (`govwatch_llm_up = 1`)
+  and stored summaries.
+- The review UI served on `localhost:30080`.
+- Prometheus scraped both jobs, and no alerts fired.
+- The review pod could reach Postgres but not the internet.
+- A second plan showed no changes, and destroy was clean.
+
+## 57. Component labels on every selector
+
+**Date:** 2026-10-01 · **Status:** accepted (chart 0.2.0, breaking for upgrades)
+
+**Decision:** The worker and the review app carry `app.kubernetes.io/component: worker` /
+`review`, and every selector (Deployments, Services, NetworkPolicies, ServiceMonitors)
+includes it.
+
+**Why:**
+- Both run in one release, and the chart's selectors only matched on app name and instance.
+  With the review Deployment added, the worker's Service, NetworkPolicy and ServiceMonitor
+  would have matched the review pods too: metrics scrapes sent to the wrong pod, and the wrong
+  network rules applied to it.
+- Verified on the cluster: each Service's endpoints now contain only its own pod.
+- Deployment selectors can't change in place, so upgrading a 0.1.x release needs
+  `helm uninstall` first, or the worker Deployment deleted. That's why the chart moved to
+  0.2.0. For the local kind setup, `terraform apply` recreates everything anyway.
 

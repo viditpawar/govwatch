@@ -268,7 +268,7 @@ terraform apply
 | `helm_release.kube_prometheus_stack` | Prometheus, Alertmanager, Grafana. Picks up ServiceMonitors and rules from every namespace; the Grafana sidecar loads the govwatch dashboard; Postgres data source configured as `grafana_reader` |
 | `random_password` x2 | Grafana admin password, and the read-only database role's password |
 | `kubernetes_secret_v1` x2 | API keys, and the `grafana_reader` credentials that CloudNativePG applies to the managed role |
-| `helm_release.govwatch` | The chart, with alert rules and the dashboard read straight from `observability/` |
+| `helm_release.govwatch` | The chart: the worker (with the agent, calling Ollama on the host via `host.docker.internal`) and the review app, with alert rules and the dashboard read straight from `observability/` |
 
 Then:
 
@@ -276,6 +276,7 @@ Then:
 |---|---|
 | Grafana | http://localhost:30300 (anonymous read-only; admin password: `terraform output -raw grafana_admin_password`) |
 | Prometheus | http://localhost:30090 |
+| Review queue | http://localhost:30080 (loopback only, no auth) |
 | kubectl | `kubectl --context kind-govwatch -n govwatch get pods` |
 
 `terraform destroy` removes everything.
@@ -348,6 +349,11 @@ How the chart is set up:
   and ingress only on the metrics port from the monitoring namespace. Tested on kind: port 80
   egress and scrapes from other namespaces are blocked.
 - **`values.schema.json`** rejects bad config at install time, e.g. a poll interval under 60s.
+- **Agent and review app** (chart 0.2.0): `agent.enabled` runs the summarization agent in the
+  worker against `agent.ollamaUrl`. The NetworkPolicy opens only that port, and only when it's
+  on. `review.enabled` adds the review app as its own Deployment, with its own NetworkPolicy
+  (database only, no internet) and ServiceMonitor. Every selector includes the component, so
+  the worker's Service never picks up review pods.
 
 ## CI/CD
 
