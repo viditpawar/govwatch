@@ -1,5 +1,6 @@
 # govwatch
 
+[![ci](https://github.com/viditpawar/govwatch/actions/workflows/ci.yml/badge.svg)](https://github.com/viditpawar/govwatch/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-4169E1?logo=postgresql&logoColor=white)
 ![Docker](https://img.shields.io/badge/Container-Docker-2496ED?logo=docker&logoColor=white)
@@ -173,6 +174,7 @@ govwatch/
 │   └── grafana/dashboards/   # dashboard json (shared by compose and k8s)
 ├── charts/govwatch/          # Helm chart: worker, CloudNativePG Postgres, monitoring CRs
 ├── infra/                    # Terraform: kind cluster, operators, monitoring stack, app
+├── .github/                  # CI workflow, Dependabot
 ├── deploy/compose/           # Prometheus config, Grafana provisioning, db init
 ├── docs/runbook.md           # one section per alert
 ├── compose.yaml
@@ -330,10 +332,45 @@ How the chart is set up:
   user never needs `CREATEROLE`.
 - **The pod is locked down:** non-root, read-only root filesystem, all capabilities dropped,
   `RuntimeDefault` seccomp, and no service account token.
+- **Secrets are files, not environment variables.** The API keys and database URI are
+  projected into `/var/run/secrets/govwatch` (mode `0440`, group-owned by the app user), and
+  the settings module reads them from there. Nothing secret is in the process environment,
+  so it can't leak into child processes, crash dumps or `/proc/<pid>/environ`.
+- **Deploy by digest** with `image.digest`. CI does; the local kind build uses a content-hash tag.
 - **A NetworkPolicy** allows egress only to DNS, the database pods, and 443 (the two APIs),
   and ingress only on the metrics port from the monitoring namespace. Tested on kind: port 80
   egress and scrapes from other namespaces are blocked.
 - **`values.schema.json`** rejects bad config at install time, e.g. a poll interval under 60s.
+
+## CI/CD
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push and pull request:
+
+| Job | What it checks |
+|---|---|
+| `python` | ruff lint and format, then pytest against a real Postgres service container. `GOVWATCH_REQUIRE_DB=1` makes the database tests **fail instead of skip** if Postgres isn't reachable |
+| `observability` | `promtool check rules` and `promtool test rules`; the dashboard JSON parses |
+| `helm` | `helm lint --strict`, then kubeconform (strict, including CloudNativePG and Prometheus Operator CRD schemas) on the chart rendered with every feature on |
+| `terraform` | `fmt -check`, `init`, `validate` |
+| `security` | Checkov on the Terraform and on the **rendered** chart manifests |
+| `image` | Builds, scans with Trivy (fails on fixable HIGH/CRITICAL), and on `main` pushes `ghcr.io/viditpawar/govwatch:{sha,latest}` |
+| `e2e` | A throwaway kind cluster with CloudNativePG and the chart, using the image built in this run. A real ingest against the live APIs, then `govwatch audit`, which fails the build if anything upstream is missing from Postgres |
+
+Supply chain and security:
+
+- **Pinned actions:** every third-party action is pinned to a full commit SHA, with the
+  version in a comment. Dependabot updates both, along with uv, Docker and Terraform
+  dependencies, in weekly grouped PRs.
+- **Least privilege:** the workflow token defaults to `contents: read`; only the image job
+  gets `packages: write`.
+- **Checkov runs on the rendered chart**, not the raw chart. Checkov's Helm mode renders
+  default values, which deliberately fail without secrets, so it silently scanned nothing.
+  Rendered: 90 passed, 0 failed, and 3 documented skips (no CPU limit, configurable pull
+  policy, tag vs digest), with the reasoning on the Deployment's annotations.
+- **The runtime image applies Debian security updates.** The first Trivy run found 7 fixable
+  OpenSSL CVEs in `python:3.12-slim` that hadn't reached the base image yet.
+- **e2e needs an `API_DATA_GOV_KEY` repository secret.** Without it, the job skips with a
+  notice, so forks still get a green build.
 
 ## CLI
 
@@ -464,7 +501,7 @@ docker run --rm -v "$PWD/observability:/obs:ro" --entrypoint promtool prom/prome
 - [x] Completeness auditor with self-healing re-ingest
 - [x] Helm chart (CloudNativePG Postgres, hardened pod, NetworkPolicy, monitoring CRs)
 - [x] Terraform-provisioned kind cluster (cluster, operators, monitoring stack, app)
-- [ ] GitHub Actions: lint, test, Trivy, Checkov, image publish, kind smoke test
+- [x] GitHub Actions: lint, tests, rule tests, kubeconform, Checkov, Trivy, GHCR publish, kind e2e with a live audit
 
 **Phase 2: agent layer + AgentOps**
 
