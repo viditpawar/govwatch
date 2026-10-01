@@ -1,0 +1,44 @@
+{
+    "bills": [
+        {
+            "congress": 119,
+            "introducedDate": "2025-12-03",
+            "latestAction": {
+                "actionDate": "2025-12-03",
+                "text": "Referred to the Committee on Education and Workforce, and in addition to the Committee on Ways and Means, for a period to be subsequently determined by the Speaker, in each case for consideration of such provisions as fall within the jurisdiction of the committee concerned."
+            },
+            "number": "6417",
+            "originChamber": "House",
+            "originChamberCode": "H",
+            "title": "Emergency Savings Enhancement Act of 2025",
+            "type": "HR",
+            "updateDate": "2026-09-28",
+            "updateDateIncludingText": "2026-09-28",
+            "url": "https://api.congress.gov/v3/bill/119/hr/6417?format=json"
+        },
+        {
+            "congress": 119,
+            "introducedDate": "2025-06-05",
+            "latestAction": {
+                "actionDate": "2025-06-05",
+                "text": "Read twice and referred to the Committee on Agriculture, Nutrition, and Forestry."
+            },
+            "number": "1972",
+            "originChamber": "Senate",
+            "originChamberCode": "S",
+            "title": "Bioweapon Prevention Act of 2025",
+            "type": "S",
+            "updateDate": "2026-09-28",
+            "updateDateIncludingText": "2026-09-28",
+            "url": "https://api.congress.gov/v3/bill/119/s/1972?format=json"
+        }
+    ],
+    "pagination": {
+        "count": 284,
+        "next": "https://api.congress.gov/v3/bill?fromDateTime=2026-09-28T00:00:00Z&sort=updateDate asc&toDateTime=2026-09-29T00:00:00Z&offset=2&limit=2&format=json"
+    },
+    "request": {
+        "contentType": "application/json",
+        "format": "json"
+    }
+}
