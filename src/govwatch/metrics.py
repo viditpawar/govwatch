@@ -203,6 +203,11 @@ AGENT_DISTRIBUTION_DRIFT = Gauge(
     "official areas of incoming bills, kind=output is what the model picked",
     ["kind"],
 )
+AGENT_SOURCE_SUPPORT = Gauge(
+    "govwatch_agent_source_support_median",
+    "Median share of summary content words found in the source text (agent/faithfulness.py)",
+    ["window"],
+)
 REVIEW_DECIDED = Gauge("govwatch_review_decided", "Summaries reviewed, by window", ["window"])
 REVIEW_REJECTION_RATIO = Gauge(
     "govwatch_review_rejection_ratio", "Share of reviewed summaries that were rejected", ["window"]

@@ -55,6 +55,7 @@ def refresh(conn: psycopg.Connection) -> None:
                count(*) FILTER (WHERE model_policy_area = policy_area) AS area_matched,
                count(*) FILTER (WHERE jsonb_array_length(validation_issues) > 0) AS gate_failed,
                avg(length(summary)) AS mean_length,
+               percentile_cont(0.5) WITHIN GROUP (ORDER BY source_support) AS support,
                count(*) FILTER (WHERE status IN ('approved', 'rejected')) AS decided,
                count(*) FILTER (WHERE status = 'rejected') AS rejected
           FROM bill_summaries
@@ -63,13 +64,25 @@ def refresh(conn: psycopg.Connection) -> None:
         """
     ).fetchall()
     seen = set()
-    for window, generated, checked, matched, gate_failed, mean_len, decided, rejected in rows:
+    for (
+        window,
+        generated,
+        checked,
+        matched,
+        gate_failed,
+        mean_len,
+        support,
+        decided,
+        rejected,
+    ) in rows:
         if window is None:
             continue
         seen.add(window)
         metrics.AGENT_QUALITY_SAMPLES.labels(window).set(generated)
         metrics.AGENT_GATE_FAILURE_RATIO.labels(window).set(gate_failed / generated)
         metrics.AGENT_SUMMARY_LENGTH.labels(window).set(float(mean_len or 0))
+        if support is not None:
+            metrics.AGENT_SOURCE_SUPPORT.labels(window).set(float(support))
         if checked:
             metrics.AGENT_POLICY_AGREEMENT.labels(window).set(matched / checked)
         metrics.REVIEW_DECIDED.labels(window).set(decided)

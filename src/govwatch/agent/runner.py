@@ -18,6 +18,7 @@ import psycopg
 
 from govwatch import metrics
 from govwatch.agent.facts import derive_stage
+from govwatch.agent.faithfulness import source_support
 from govwatch.agent.llm import Generation, LLMError, LLMUnavailable, OllamaClient
 from govwatch.agent.prompt import OUTPUT_SCHEMA, PROMPT_VERSION, build_prompt, with_feedback
 from govwatch.agent.validate import Issue, validate
@@ -59,6 +60,7 @@ class AgentResult:
     # the CRS text the model was given, kept so a reviewer checks against exactly that
     source_text: str | None = None
     source_truncated: bool = False
+    source_support: float | None = None
     generation: Generation | None = None
     error: str | None = None
 
@@ -144,6 +146,8 @@ def summarize_bill(bill: BillRow, fetch_context: FetchContext, llm: OllamaClient
     result.summary = result.generation.output.get("summary")
     result.model_policy_area = result.generation.output.get("policy_area")
     result.status = "needs_attention" if result.issues else "pending_review"
+    if result.summary:
+        result.source_support = source_support(result.summary, ctx.crs_summary, bill.title)
     if ctx.policy_area:
         match = result.model_policy_area == ctx.policy_area
         metrics.AGENT_POLICY_AREA.labels("match" if match else "mismatch").inc()
@@ -157,9 +161,10 @@ def store_result(conn: psycopg.Connection, bill: BillRow, result: AgentResult) -
             """
             INSERT INTO bill_summaries (
                 bill_id, source_hash, status, stage, summary, policy_area, model_policy_area,
-                crs_summary_version, source_text, source_truncated, validation_issues,
-                attempts, model, prompt_version, llm_seconds, prompt_tokens, completion_tokens)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                crs_summary_version, source_text, source_truncated, source_support,
+                validation_issues, attempts, model, prompt_version, llm_seconds,
+                prompt_tokens, completion_tokens)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 bill.bill_id,
@@ -172,6 +177,7 @@ def store_result(conn: psycopg.Connection, bill: BillRow, result: AgentResult) -
                 result.crs_summary_version,
                 result.source_text,
                 result.source_truncated,
+                result.source_support,
                 json.dumps([{"check": i.check, "detail": i.detail} for i in result.issues]),
                 result.attempts,
                 gen.model if gen else None,
