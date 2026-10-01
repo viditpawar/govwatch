@@ -111,11 +111,14 @@ tests:
     interval: 1m
     input_series:
       - series: 'govwatch_api_ratelimit_remaining{source="regulations"}'
-        values: "500 200 80 50 40 30 20 10"
+        values: "500 200 80 50 40 30 20 10 10"
       - series: 'govwatch_api_ratelimit_limit{source="regulations"}'
-        values: "1000x7"
+        values: "1000x8"
     alert_rule_test:
-      - eval_time: 7m
+      # below 10% from 2m, so `for: 5m` completes at 7m - but the alert reads a series
+      # recorded by another rule group, and groups evaluate independently, so it can lag
+      # one 30s evaluation. asserting exactly at 7m made this test fail ~1 run in 5
+      - eval_time: 8m
         alertname: GovwatchRateLimitLow
         exp_alerts:
           - exp_labels:
