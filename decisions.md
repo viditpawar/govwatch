@@ -59,6 +59,8 @@ entry stays and is marked superseded, so the reasoning history is kept.
 | 51 | [Quality and drift from stored summaries, recent vs baseline](#51-quality-and-drift-from-stored-summaries-recent-vs-baseline) | AgentOps |
 | 52 | [Separate input drift from output drift](#52-separate-input-drift-from-output-drift) | AgentOps |
 | 53 | [Each process exports only its own metrics](#53-each-process-exports-only-its-own-metrics) | Observability |
+| 54 | [A golden-set model eval in CI](#54-a-golden-set-model-eval-in-ci) | AgentOps |
+| 55 | [Measure grounding, because nothing else caught a title-only regression](#55-measure-grounding-because-nothing-else-caught-a-title-only-regression) | AgentOps |
 
 ---
 
@@ -959,4 +961,72 @@ in that batch:
 - There's now a test that the review app's `/metrics` contains none of the worker's metrics,
   shown to fail with the old behavior. There's also a rule test that a heartbeat of 0 from
   `job="review"` doesn't fire.
+
+## 54. A golden-set model eval in CI
+
+**Date:** 2026-10-01 · **Status:** accepted
+
+**Decision:**
+- `tests/eval/golden_bills.jsonl` freezes 25 real bills across 15 policy areas and 5
+  legislative stages, each with its CRS text and official policy area.
+- `govwatch eval` runs the real model over them through the production path (prompt,
+  constrained generation, gate, retry) and fails below these floors:
+  - 85% gate pass rate
+  - 35% policy-area agreement
+  - 0.60 median source support
+- A `model-eval` workflow runs it on GitHub's CPU runners whenever the agent code or the eval
+  changes, with the model cached between runs.
+- The gate itself is checked on every commit (no model needed) against labelled cases,
+  including both real false positives (CDC, USDA) and the real catch (an invented FY2020).
+
+**Why:**
+- The unit tests use a fake model. Drift alerts only notice a regression after it has shipped
+  and run for days. Without this, a prompt edit that makes summaries worse would merge green.
+- The inputs are frozen so runs are comparable and need no congress.gov access.
+- The floors come from measurement, not intuition:
+
+| | GPU | CPU (like CI) | floor |
+|---|---|---|---|
+| gate pass | 100% | 100% | 85% |
+| policy agreement | 44-48% | 52% | 35% |
+| source support (median) | 0.75-0.77 | 0.78 | 0.60 |
+
+- Even at temperature 0, runs aren't identical (agreement moved between 44% and 52%), so the
+  floors leave room for that without letting a real regression through.
+
+**It changed what I thought the model's accuracy was:** live batches had shown 58-74%
+agreement with CRS. On the golden set, deliberately balanced across policy areas, it's 44-52%.
+The live stream was flattering the model with easy cases (lots of commemorative resolutions).
+The balanced number is the honest one.
+
+## 55. Measure grounding, because nothing else caught a title-only regression
+
+**Date:** 2026-10-01 · **Status:** accepted
+
+**Decision:**
+- Track source support: the share of a summary's content words (excluding the title)
+  that appear in the CRS text.
+- It's stored per summary, has an eval floor (median at least 0.60), and has a production
+  alert (`GovwatchAgentGroundingDrop`, recent median 0.15+ below baseline).
+- It is **not** a gate check.
+
+**Why:**
+- To test the eval, I simulated the most important regression: the prompt losing the CRS
+  text, so the model sees only titles.
+- **The eval passed it:** gate 100%, and agreement *rose* to 52%.
+  - Agreement doesn't depend on grounding: a title is enough to guess a policy area.
+  - The gate's grounding checks only catch specific details (numbers, acronyms), and a fluent
+    invented summary has none.
+- Meanwhile the summaries were fiction. "RESTORE Act of 2025", a SNAP eligibility bill,
+  became "allocating funds from oil spill cleanup efforts to coastal restoration". The model
+  confused it with the 2012 law of the same name.
+- Source support separated the two cleanly: median 0.77 grounded vs 0.20 title-only.
+- Per summary it's too noisy to gate on. A faithful paraphrase ("allocates funds" for
+  "provides amounts") scores low, and 7 of 25 grounded summaries scored under 0.5. Over a
+  batch, it's reliable.
+- With the floor in place, the same simulated regression now fails the eval (exit 1), and the
+  real prompt passes.
+- It's a deliberately simple lexical measure, run with no extra model. A stronger version
+  would use an entailment model or a second LLM as a judge. That's worth it if this ever
+  becomes more than a local tool.
 

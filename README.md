@@ -388,6 +388,7 @@ govwatch ingest [--source congress]      # one cycle, non-zero exit on failure
 govwatch audit [--source X] [--repair]   # reconcile upstream counts vs stored, non-zero exit on gaps
 govwatch agent [--limit N] [--bill ID]   # summarize changed bills with the local model (phase 2)
 govwatch review [--host H] [--port P]    # human review queue on 127.0.0.1:8080 (phase 2)
+govwatch eval [--json report.json]       # score the model on the golden set, non-zero below floors
 govwatch peek regulations --days 1       # print recent records from the live API, no db writes
 ```
 
@@ -438,6 +439,7 @@ The agent runs inside the worker loop, so it's monitored like any other service:
 | Accuracy vs ground truth | `govwatch_agent_policy_area_agreement{window}` | `GovwatchAgentAgreementDrop` |
 | Drift | `govwatch_agent_policy_area_drift{kind=input,output}` | `GovwatchAgentOutputDrift` |
 | Human verdicts | `govwatch_review_rejection_ratio{window}` | `GovwatchReviewRejectionsHigh` |
+| Grounding in the source | `govwatch_agent_source_support_median{window}` | `GovwatchAgentGroundingDrop` |
 | Queue health | `govwatch_review_queue_bills`, oldest age | `GovwatchReviewQueueStale` |
 
 - **Drift alerts compare windows, not fixed numbers.** Each signal is computed for the last 7
@@ -450,6 +452,34 @@ The agent runs inside the worker loop, so it's monitored like any other service:
 - **The "Recent reviewer rejections" panel shows what humans caught that the gate didn't.**
   Those are the candidates for the next validation check.
 - All of the agent alerts are unit tested with promtool, including the "don't fire" cases.
+
+### Model evaluation in CI
+
+Unit tests use a fake model, and drift alerts only notice a regression after it has shipped.
+So the real model is evaluated before merge:
+
+- **Golden set:** 25 real bills across 15 policy areas and 5 legislative stages, frozen with
+  their CRS text and official policy area (`tests/eval/golden_bills.jsonl`).
+- **`govwatch eval`** runs the model over them through the production path and fails below
+  85% gate pass, 35% policy-area agreement, or 0.60 median source support.
+- **The `model-eval` workflow** runs it on GitHub's CPU runners whenever agent code changes,
+  and posts a results table to the job summary.
+- **Gate cases** are checked on every commit, with no model needed: the real false positives
+  (CDC, USDA) and the real catch (an invented FY2020).
+
+| | GPU | CPU (CI) | floor |
+|---|---|---|---|
+| gate pass | 100% | 100% | 85% |
+| policy-area agreement | 44-48% | 52% | 35% |
+| source support (median) | 0.75-0.77 | 0.78 | 0.60 |
+
+**Testing the eval itself found its biggest gap.** I removed the CRS text from the prompt,
+so the model only saw titles, and the first version of the eval still passed: gate pass
+100%, agreement even higher. The summaries were invented. "RESTORE Act of 2025", a SNAP
+eligibility bill, came back as oil spill restoration funding, because the model confused it
+with an older law of the same name. A source-support measure (share of summary words found
+in the source) separated the two cleanly, 0.77 vs 0.20. With that floor added, the same
+regression now fails the eval. The same measure runs in production as a drift alert.
 
 The reasoning for each design choice is in [decisions.md](decisions.md) (#37 onwards).
 
