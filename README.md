@@ -84,11 +84,22 @@ Repairs are counted (`govwatch_completeness_repairs_total`), and repeated repair
 their own alert. Auto-repair keeps the data correct, but a gap that keeps coming back is
 still a bug, and it shouldn't be hidden by the fix.
 
-The auditor has already found a real problem. On a fresh Kubernetes deploy it reported
-5 bills missing, and a re-ingest didn't fix it. The cause wasn't the pipeline: congress.gov's
-CDN was serving a 16-minute-old cached *count* (`Age: 965`, `Cf-Cache-Status: HIT`) while
-the listing was fresh. Audit requests now bypass the cache and reject stale responses
-(see the design notes).
+The auditor has already caught two real problems, both in congress.gov's API:
+
+1. **A stale CDN count.** On a fresh Kubernetes deploy it reported 5 bills missing, and a
+   re-ingest didn't fix it. The data was fine: congress.gov's CDN was serving a
+   16-minute-old cached *count* (`Age: 965`, `Cf-Cache-Status: HIT`) while the listing was
+   fresh. Audit requests now bypass the cache and reject stale responses.
+2. **Bills skipped at page boundaries.** On the first Terraform deploy, a 7-day backfill
+   reported `1844 seen, 1838 changed`. Those two numbers should be equal on an empty
+   database, so the API had returned 6 duplicates. The audit then found 3 bills missing.
+   Auto-repair restored them within a second, but the root cause was in paging: bills tied
+   on `updateDate` across a page boundary are returned twice and their neighbours skipped,
+   the same way on every request. The client now dedupes and re-pages with a different page
+   size until it matches the API's count.
+
+Neither problem shows up on lag, freshness, or error-rate metrics. Both would have meant
+silently incomplete data.
 
 ## Features
 
@@ -121,6 +132,7 @@ the design:
 | regulations.gov caps how deep you can page (the API rejects page numbers past 40) | Each query stops at 20 pages × 250, then the window slides forward to the last timestamp seen |
 | Sliding the window re-returns records in the boundary second | IDs from that second are tracked and skipped in the next window |
 | Offset paging over a list that changes while you read it | Results are sorted oldest-first, so records updated mid-crawl move to the end instead of shifting pages |
+| congress.gov can only sort by `updateDate` (a bare date), so hundreds of bills tie, and rows tied across a page boundary come back on both sides of it while their neighbours are skipped. It's deterministic, so re-paging the same way skips the same bills | Results are deduped as they stream and checked against the API's own count. If a pass is short, the window is paged again with a different page size (250, then 230, then 190) so the boundaries move. A 7-day window went from 1,839 / 1,844 to 1,844 / 1,844 |
 | A crash mid-run | Batches commit independently and the cursor doesn't move, so the next run safely covers the same window |
 | The API key showing up in logs | The key is sent as an `X-Api-Key` header, never as a query parameter |
 | A record re-updated upstream leaves the source's count window before it leaves ours | The auditor only counts a shortfall as missing; extra local rows are expected drift |
@@ -410,6 +422,7 @@ consumers (summarizers, tagging agents, alerting) a cheap way to process only wh
 | `govwatch_api_request_duration_seconds` | histogram | Upstream latency |
 | `govwatch_api_retries_total{source,reason}` | counter | Retry pressure |
 | `govwatch_api_ratelimit_remaining` | gauge | Headroom on api.data.gov rate limits |
+| `govwatch_api_paging_repasses_total` | counter | Extra passes over a window because paging came up short of the API's count |
 | `govwatch_stored_records` | gauge | Rows stored per source |
 | `govwatch_completeness_ratio` | gauge | Share of the source's records for the audit window that are stored |
 | `govwatch_completeness_missing_records` | gauge | Records the source has that we don't |
