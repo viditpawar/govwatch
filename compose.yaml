@@ -1,5 +1,15 @@
 name: govwatch
 
+# shared by the migrate job and the worker. env_file supplies the api keys;
+# the values below override the localhost-oriented ones in .env
+x-govwatch: &govwatch
+  build: .
+  image: govwatch:dev
+  env_file: .env
+  environment:
+    GOVWATCH_DATABASE_URL: postgresql://govwatch:govwatch@postgres:5432/govwatch
+    GOVWATCH_METRICS_HOST: 0.0.0.0
+
 services:
   postgres:
     image: postgres:17-alpine
@@ -18,5 +28,66 @@ services:
       timeout: 3s
       retries: 10
 
+  migrate:
+    <<: *govwatch
+    command: ["migrate"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    <<: *govwatch
+    command: ["run"]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    ports:
+      - "9100:9100"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:9100/healthz', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/compose/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    depends_on:
+      - worker
+
+  grafana:
+    image: grafana/grafana:12.0.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      # read-only anonymous access so the dashboards can be demoed without logging in
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./deploy/compose/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafanadata:/var/lib/grafana
+    depends_on:
+      - prometheus
+
 volumes:
   pgdata:
+  promdata:
+  grafanadata:
