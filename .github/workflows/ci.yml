@@ -1,0 +1,252 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# least privilege by default; the image job asks for package write on its own
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+  PROMETHEUS_IMAGE: prom/prometheus:v3.5.0
+  KUBECONFORM_VERSION: v0.8.0
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: govwatch
+          POSTGRES_PASSWORD: govwatch
+          POSTGRES_DB: govwatch_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U govwatch -d govwatch_test"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      GOVWATCH_TEST_DATABASE_URL: postgresql://govwatch:govwatch@localhost:5432/govwatch_test
+      GOVWATCH_REQUIRE_DB: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: ruff
+        run: |
+          uv run ruff check .
+          uv run ruff format --check src tests
+      - name: pytest
+        run: uv run pytest -v
+
+  observability:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: check alert rules
+        run: >-
+          docker run --rm -v "$PWD/observability:/obs:ro" --entrypoint promtool "$PROMETHEUS_IMAGE"
+          check rules /obs/prometheus/rules/govwatch.rules.yml
+      - name: unit test alert rules
+        run: >-
+          docker run --rm -v "$PWD/observability:/obs:ro" --entrypoint promtool "$PROMETHEUS_IMAGE"
+          test rules /obs/prometheus/tests/govwatch.rules.test.yml
+      - name: dashboard json parses
+        run: python3 -m json.tool observability/grafana/dashboards/govwatch.json > /dev/null
+
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+      - name: lint
+        run: helm lint --strict charts/govwatch --set apiKeys.existingSecret=keys --set database.cnpg.enabled=true
+      - name: render with every feature on
+        run: |
+          mkdir -p rendered
+          helm template govwatch charts/govwatch -n govwatch \
+            --set apiKeys.existingSecret=keys \
+            --set database.cnpg.enabled=true \
+            --set database.cnpg.grafanaReader.passwordSecret=grafana-reader \
+            --set monitoring.serviceMonitor.enabled=true \
+            --set monitoring.prometheusRule.enabled=true \
+            --set monitoring.dashboard.enabled=true \
+            --set-file monitoring.prometheusRule.rules=observability/prometheus/rules/govwatch.rules.yml \
+            --set-file monitoring.dashboard.json=observability/grafana/dashboards/govwatch.json \
+            > rendered/govwatch.yaml
+      - name: kubeconform
+        run: |
+          curl -sSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" | tar xz
+          ./kubeconform -strict -summary -kubernetes-version 1.36.0 \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            rendered/govwatch.yaml
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rendered-chart
+          path: rendered/
+
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.16.4
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false -input=false
+      - run: terraform validate
+
+  security:
+    runs-on: ubuntu-latest
+    needs: helm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rendered-chart
+          path: rendered/
+      # the chart is scanned as rendered manifests, with production-like values. scanning
+      # the raw chart only renders defaults, which deliberately fail without secrets
+      - name: checkov
+        run: |
+          pipx install checkov==3.3.21
+          checkov -d infra --framework terraform --compact --quiet
+          checkov -d rendered --framework kubernetes --compact --quiet
+
+  image:
+    runs-on: ubuntu-latest
+    needs: python
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+      - name: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: govwatch:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: trivy
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: govwatch:ci
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: save image for the e2e job
+        run: docker save govwatch:ci -o /tmp/govwatch.tar
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image
+          path: /tmp/govwatch.tar
+          retention-days: 1
+      - if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        name: push to ghcr
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+
+  # full deploy on a throwaway kind cluster: cloudnative-pg, the chart, a real ingest
+  # against the live APIs, then a completeness audit. needs an API_DATA_GOV_KEY repo
+  # secret, so it's skipped on forks
+  e2e:
+    runs-on: ubuntu-latest
+    needs: [image, helm]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    env:
+      API_KEY: ${{ secrets.API_DATA_GOV_KEY }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.API_KEY != ''
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: env.API_KEY != ''
+        with:
+          name: image
+          path: /tmp
+      - uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+        if: env.API_KEY != ''
+        with:
+          cluster_name: govwatch-ci
+      - name: load image
+        if: env.API_KEY != ''
+        run: |
+          docker load -i /tmp/govwatch.tar
+          kind load docker-image govwatch:ci --name govwatch-ci
+      - name: install cloudnative-pg
+        if: env.API_KEY != ''
+        run: |
+          helm repo add cnpg https://cloudnative-pg.github.io/charts
+          helm install cnpg cnpg/cloudnative-pg --version 0.29.1 \
+            -n cnpg-system --create-namespace --wait --timeout 5m
+      - name: install govwatch
+        if: env.API_KEY != ''
+        run: |
+          kubectl create namespace govwatch
+          kubectl -n govwatch create secret generic govwatch-api-keys \
+            --from-literal=congress-api-key="$API_KEY" \
+            --from-literal=regulations-api-key="$API_KEY"
+          # a 4 day backfill covers the 3 day audit window
+          helm install govwatch charts/govwatch -n govwatch \
+            --set image.repository=govwatch --set image.tag=ci --set image.pullPolicy=Never \
+            --set apiKeys.existingSecret=govwatch-api-keys \
+            --set database.cnpg.enabled=true \
+            --set database.cnpg.grafanaReader.enabled=false \
+            --set config.backfillDays=4 \
+            --wait --timeout 8m
+      - name: wait for the first ingest
+        if: env.API_KEY != ''
+        run: |
+          for i in $(seq 1 60); do
+            if kubectl -n govwatch logs deploy/govwatch -c worker | grep -q "regulations: audit"; then break; fi
+            sleep 5
+          done
+          kubectl -n govwatch logs deploy/govwatch -c worker
+          ! kubectl -n govwatch logs deploy/govwatch -c worker | grep -q ": failed"
+      - name: completeness audit
+        if: env.API_KEY != ''
+        # exits non-zero if anything upstream is missing from postgres
+        run: kubectl -n govwatch exec deploy/govwatch -c worker -- govwatch audit
+      - name: debug on failure
+        if: failure() && env.API_KEY != ''
+        run: |
+          kubectl get pods -A
+          kubectl -n govwatch describe pods
+          kubectl -n govwatch logs deploy/govwatch -c migrate || true
+      - name: skipped
+        if: env.API_KEY == ''
+        run: echo "::notice::e2e skipped - add an API_DATA_GOV_KEY repository secret to enable it"
