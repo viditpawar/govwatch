@@ -1,0 +1,100 @@
+image:
+  repository: ghcr.io/viditpawar/govwatch
+  # defaults to the chart's appVersion
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# maps to the GOVWATCH_* settings, see the README for what each one does
+config:
+  pollIntervalSeconds: 900
+  backfillDays: 7
+  auditIntervalSeconds: 21600
+  auditWindowDays: 3
+  auditAutoRepair: true
+  logLevel: INFO
+
+apiKeys:
+  # existing secret with `congress-api-key` and `regulations-api-key` keys.
+  # recommended - keeps keys out of helm values and release history
+  existingSecret: ""
+  # only used when existingSecret is empty
+  congress: ""
+  regulations: ""
+
+database:
+  # secret holding a postgres connection uri. ignored when cnpg.enabled is true,
+  # in which case the uri secret cloudnative-pg generates is used instead
+  existingSecret: ""
+  uriKey: uri
+
+  # provision postgres with the cloudnative-pg operator (operator must already be installed)
+  cnpg:
+    enabled: false
+    instances: 1
+    imageName: ghcr.io/cloudnative-pg/postgresql:17.5
+    storageSize: 2Gi
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits: { memory: 512Mi }
+    # login role for dashboards. it's granted govwatch_readonly, which can only read
+    # the reporting views. the secret must be kubernetes.io/basic-auth with
+    # username=grafana_reader and a password
+    grafanaReader:
+      enabled: true
+      passwordSecret: ""
+
+serviceAccount:
+  create: true
+  name: ""
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+resources:
+  requests: { cpu: 50m, memory: 128Mi }
+  limits: { memory: 256Mi }
+
+migrate:
+  resources:
+    requests: { cpu: 20m, memory: 64Mi }
+    limits: { memory: 128Mi }
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+networkPolicy:
+  enabled: true
+  # namespace prometheus scrapes from
+  metricsNamespace: monitoring
+
+monitoring:
+  serviceMonitor:
+    enabled: false
+    interval: 15s
+    # kube-prometheus-stack only picks up monitors/rules with its release label
+    labels: {}
+  prometheusRule:
+    enabled: false
+    labels: {}
+    # contents of observability/prometheus/rules/govwatch.rules.yml, e.g.
+    #   --set-file monitoring.prometheusRule.rules=observability/prometheus/rules/govwatch.rules.yml
+    rules: ""
+  dashboard:
+    enabled: false
+    # contents of observability/grafana/dashboards/govwatch.json (via --set-file)
+    json: ""
+    # namespace the grafana dashboard sidecar watches
+    namespace: ""
+    labels:
+      grafana_dashboard: "1"

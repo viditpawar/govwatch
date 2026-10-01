@@ -1,0 +1,16 @@
+apiVersion: v2
+name: govwatch
+description: Ingests federal bills and regulations into Postgres, with SLO alerting and completeness auditing.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/viditpawar/govwatch
+sources:
+  - https://github.com/viditpawar/govwatch
+keywords:
+  - government-data
+  - ingestion
+  - prometheus
+maintainers:
+  - name: Vidit Pawar
+    url: https://github.com/viditpawar

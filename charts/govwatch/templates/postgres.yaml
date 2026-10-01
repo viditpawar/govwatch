@@ -1,0 +1,36 @@
+{{- if .Values.database.cnpg.enabled }}
+{{- $db := .Values.database.cnpg }}
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ include "govwatch.dbClusterName" . }}
+  labels:
+    {{- include "govwatch.labels" . | nindent 4 }}
+spec:
+  instances: {{ $db.instances }}
+  imageName: {{ $db.imageName }}
+  storage:
+    size: {{ $db.storageSize }}
+  resources:
+    {{- toYaml $db.resources | nindent 4 }}
+  # cnpg creates a <cluster>-app secret with a ready-made `uri` for this owner/db
+  bootstrap:
+    initdb:
+      database: govwatch
+      owner: govwatch
+  # roles as code. govwatch_readonly is the group migration 003 grants view access to;
+  # declaring it here means the app user doesn't need CREATEROLE
+  managed:
+    roles:
+      - name: govwatch_readonly
+        ensure: present
+        login: false
+      {{- if and $db.grafanaReader.enabled $db.grafanaReader.passwordSecret }}
+      - name: grafana_reader
+        ensure: present
+        login: true
+        inRoles: [govwatch_readonly]
+        passwordSecret:
+          name: {{ $db.grafanaReader.passwordSecret }}
+      {{- end }}
+{{- end }}

@@ -1,0 +1,56 @@
+{{- $m := .Values.monitoring }}
+{{- if $m.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "govwatch.fullname" . }}
+  labels:
+    {{- include "govwatch.labels" . | nindent 4 }}
+    {{- with $m.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "govwatch.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ $m.serviceMonitor.interval }}
+      # alert rules match on job="govwatch" regardless of release name
+      relabelings:
+        - targetLabel: job
+          replacement: govwatch
+{{- end }}
+{{- if $m.prometheusRule.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "govwatch.fullname" . }}
+  labels:
+    {{- include "govwatch.labels" . | nindent 4 }}
+    {{- with $m.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- required "monitoring.prometheusRule.rules is empty - pass it with --set-file" $m.prometheusRule.rules | nindent 2 }}
+{{- end }}
+{{- if $m.dashboard.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "govwatch.fullname" . }}-dashboard
+  namespace: {{ default .Release.Namespace $m.dashboard.namespace }}
+  labels:
+    {{- include "govwatch.labels" . | nindent 4 }}
+    {{- with $m.dashboard.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  annotations:
+    grafana_folder: govwatch
+data:
+  govwatch.json: |-
+    {{- required "monitoring.dashboard.json is empty - pass it with --set-file" $m.dashboard.json | nindent 4 }}
+{{- end }}

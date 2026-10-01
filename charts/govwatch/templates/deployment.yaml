@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "govwatch.fullname" . }}
+  labels:
+    {{- include "govwatch.labels" . | nindent 4 }}
+spec:
+  # one active ingester. advisory locks make a second replica safe, but it would
+  # only sit there waiting for the lock
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "govwatch.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "govwatch.selectorLabels" . | nindent 8 }}
+      {{- if not .Values.apiKeys.existingSecret }}
+      annotations:
+        checksum/api-keys: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "govwatch.serviceAccountName" . }}
+      # the worker never talks to the kubernetes api
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      # migrations run before the worker starts. the runner holds a postgres advisory
+      # lock, so overlapping pods during a rollout can't migrate at the same time
+      initContainers:
+        - name: migrate
+          image: {{ include "govwatch.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["migrate"]
+          env:
+            {{- include "govwatch.env" . | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.migrate.resources | nindent 12 }}
+      containers:
+        - name: worker
+          image: {{ include "govwatch.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["run"]
+          env:
+            {{- include "govwatch.env" . | nindent 12 }}
+          ports:
+            - name: metrics
+              containerPort: 9100
+              protocol: TCP
+          # /healthz only fails when the loop itself is wedged, not when an upstream
+          # api is down - restarting wouldn't fix that
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: 15
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      # matches the worker's own shutdown: finish the current run, then exit
+      terminationGracePeriodSeconds: 60
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

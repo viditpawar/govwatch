@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "govwatch.fullname" . }}
+  labels:
+    {{- include "govwatch.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "govwatch.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: metrics
+      port: 9100
+      targetPort: metrics
+      protocol: TCP
