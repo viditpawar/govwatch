@@ -1,6 +1,6 @@
 import logging
 import uuid
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -11,7 +11,10 @@ from govwatch.sources.base import ApiClient, content_hash, parse_timestamp
 log = logging.getLogger(__name__)
 
 BASE_URL = "https://api.congress.gov/v3/"
-PAGE_SIZE = 250  # API max
+# page size for each pass over a window (250 is the API max). later passes only run when
+# an earlier one came up short, and use different sizes so page boundaries move
+PASS_PAGE_SIZES = (250, 230, 190)
+MAX_PASSES = len(PASS_PAGE_SIZES)
 
 
 class MalformedRecord(ValueError):
@@ -80,35 +83,72 @@ class CongressClient:
         self.malformed = 0
 
     def iter_updated_bills(self, since: datetime, until: datetime) -> Iterator[Bill]:
-        """Every bill whose updateDate falls in [since, until], oldest first.
+        """Every bill whose updateDate falls in [since, until], each exactly once.
 
-        Sorting ascending matters for offset paging: bills that get updated while
-        we're paging move to the end of the list instead of shifting earlier pages.
+        congress.gov can only sort by updateDate, which is a bare date, so hundreds of
+        bills tie. Rows tied across a page boundary come back on both sides of it and
+        their neighbours get skipped - deterministically, so re-paging the same way
+        skips the same bills. Measured on a 7-day window: 1844 rows, 1839 distinct, with
+        every duplicate within a few rows of offset 750 or 1500.
+
+        So results are deduped as they stream, and if a pass comes up short of the
+        API's own count, the window is paged again with a different page size (which
+        moves the boundaries), yielding only bills not seen yet.
         """
+        seen: set[str] = set()
+        short = 0
+        for attempt, page_size in enumerate(PASS_PAGE_SIZES, start=1):
+            expected, malformed = yield from self._one_pass(since, until, seen, page_size)
+            short = expected - malformed - len(seen)
+            if short <= 0:
+                return
+            if attempt < MAX_PASSES:
+                metrics.PAGING_REPASSES.labels("congress").inc()
+                log.warning(
+                    "congress: paging came up %d short of the api's count, re-paging", short
+                )
+        log.warning("congress: still %d short after %d passes", short, MAX_PASSES)
+
+    def _one_pass(
+        self, since: datetime, until: datetime, seen: set[str], page_size: int
+    ) -> Generator[Bill, None, tuple[int, int]]:
+        """Page through the window once. Returns (api's count, malformed records)."""
         offset = 0
+        expected = 0
+        malformed = 0
         while True:
             data = self.api.get_json(
                 "bill",
                 {
                     "fromDateTime": _fmt(since),
                     "toDateTime": _fmt(until),
+                    # ascending, so bills updated mid-crawl move to the end of the list
+                    # instead of shifting pages we've already read
                     "sort": "updateDate asc",
-                    "limit": PAGE_SIZE,
+                    "limit": page_size,
                     "offset": offset,
                     "format": "json",
                 },
             )
+            pagination = data.get("pagination") or {}
+            expected = int(pagination.get("count") or 0)
             records = data.get("bills") or []
             for raw in records:
                 try:
-                    yield parse_bill(raw)
+                    bill = parse_bill(raw)
                 except MalformedRecord as exc:
+                    malformed += 1
                     self.malformed += 1
                     metrics.MALFORMED.labels("congress").inc()
                     log.warning("congress: skipping record: %s", exc)
+                    continue
+                if bill.bill_id in seen:
+                    continue
+                seen.add(bill.bill_id)
+                yield bill
 
-            if not records or not (data.get("pagination") or {}).get("next"):
-                return
+            if not records or not pagination.get("next"):
+                return expected, malformed
             offset += len(records)
 
     def count_updated_bills(self, since: datetime, until: datetime) -> int:

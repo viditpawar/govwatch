@@ -79,6 +79,12 @@ RATELIMIT_REMAINING = Gauge(
     "Requests left in the current window, as reported by api.data.gov",
     ["source"],
 )
+PAGING_REPASSES = Counter(
+    "govwatch_api_paging_repasses_total",
+    "Extra passes over a window because paging returned fewer distinct records than the "
+    "api's own count",
+    ["source"],
+)
 RATELIMIT_LIMIT = Gauge(
     "govwatch_api_ratelimit_limit",
     "Size of the rate limit window, as reported by api.data.gov",
@@ -133,6 +139,7 @@ def init_labels() -> None:
         RECORDS_CHANGED.labels(source)
         MALFORMED.labels(source)
         API_LATENCY.labels(source)
+        PAGING_REPASSES.labels(source)
         for status in ("ok", "skipped", "failed"):
             AUDITS.labels(source, status)
         REPAIRS.labels(source)

@@ -5,9 +5,16 @@ from pathlib import Path
 import httpx
 import pytest
 import respx
+from prometheus_client import REGISTRY
 
 from govwatch.sources.base import ApiError
-from govwatch.sources.congress import BASE_URL, CongressClient, MalformedRecord, parse_bill
+from govwatch.sources.congress import (
+    BASE_URL,
+    MAX_PASSES,
+    CongressClient,
+    MalformedRecord,
+    parse_bill,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SINCE = datetime(2026, 9, 28, tzinfo=UTC)
@@ -16,6 +23,16 @@ UNTIL = datetime(2026, 9, 29, tzinfo=UTC)
 
 def load(name):
     return json.loads((FIXTURES / name).read_text())
+
+
+def listing(name, count, bills=None):
+    """A recorded listing page with pagination.count set to the size of the test's world.
+    The fixtures were recorded with limit=2, so their real count (284) doesn't apply."""
+    page = load(name)
+    page["pagination"]["count"] = count
+    if bills is not None:
+        page["bills"] = bills
+    return httpx.Response(200, json=page)
 
 
 @pytest.fixture
@@ -53,8 +70,8 @@ def test_content_hash_ignores_update_date():
 def test_pages_until_no_next_link(client):
     route = respx.get(f"{BASE_URL}bill").mock(
         side_effect=[
-            httpx.Response(200, json=load("congress_bills_page1.json")),
-            httpx.Response(200, json=load("congress_bills_page2.json")),
+            listing("congress_bills_page1.json", 3),
+            listing("congress_bills_page2.json", 3),
         ]
     )
     bills = list(client.iter_updated_bills(SINCE, UNTIL))
@@ -70,9 +87,7 @@ def test_pages_until_no_next_link(client):
 
 @respx.mock
 def test_api_key_sent_as_header_not_query(client):
-    route = respx.get(f"{BASE_URL}bill").mock(
-        return_value=httpx.Response(200, json=load("congress_bills_page2.json"))
-    )
+    route = respx.get(f"{BASE_URL}bill").mock(return_value=listing("congress_bills_page2.json", 1))
     list(client.iter_updated_bills(SINCE, UNTIL))
 
     request = route.calls.last.request
@@ -89,7 +104,7 @@ def test_retries_on_429_and_tracks_ratelimit(client):
             httpx.Response(503),
             httpx.Response(
                 200,
-                json=load("congress_bills_page2.json"),
+                json=listing("congress_bills_page2.json", 1).json(),
                 headers={"X-Ratelimit-Remaining": "4321"},
             ),
         ]
@@ -123,7 +138,7 @@ def test_retries_transport_errors(client):
     route = respx.get(f"{BASE_URL}bill").mock(
         side_effect=[
             httpx.ConnectTimeout("boom"),
-            httpx.Response(200, json=load("congress_bills_page2.json")),
+            listing("congress_bills_page2.json", 1),
         ]
     )
     assert len(list(client.iter_updated_bills(SINCE, UNTIL))) == 1
@@ -133,6 +148,7 @@ def test_retries_transport_errors(client):
 @respx.mock
 def test_skips_malformed_records(client):
     page = load("congress_bills_page2.json")
+    page["pagination"]["count"] = 2
     page["bills"].append({"title": "garbage"})
     respx.get(f"{BASE_URL}bill").mock(return_value=httpx.Response(200, json=page))
 
@@ -184,7 +200,53 @@ def test_listing_ignores_age(client):
     # paging uses unique toDateTime values, so cache age doesn't matter there
     respx.get(f"{BASE_URL}bill").mock(
         return_value=httpx.Response(
-            200, json=load("congress_bills_page2.json"), headers={"Age": "965"}
+            200, json=listing("congress_bills_page2.json", 1).json(), headers={"Age": "965"}
         )
     )
     assert len(list(client.iter_updated_bills(SINCE, UNTIL))) == 1
+
+
+def _raw_bills():
+    return load("congress_bills_page1.json")["bills"] + load("congress_bills_page2.json")["bills"]
+
+
+@respx.mock
+def test_unstable_tie_order_is_deduped_and_repaged(client):
+    """What production hit: a bill tied across a page boundary came back twice and its
+    neighbour was skipped. A pass with a different page size picks the neighbour up."""
+    a, b, c = _raw_bills()
+    route = respx.get(f"{BASE_URL}bill").mock(
+        side_effect=[
+            # pass 1: b shows up on both pages, c never does
+            listing("congress_bills_page1.json", 3, bills=[a, b]),
+            listing("congress_bills_page2.json", 3, bills=[b]),
+            # pass 2: a different order
+            listing("congress_bills_page1.json", 3, bills=[c, a]),
+            listing("congress_bills_page2.json", 3, bills=[b]),
+        ]
+    )
+    before = (
+        REGISTRY.get_sample_value("govwatch_api_paging_repasses_total", {"source": "congress"}) or 0
+    )
+
+    ids = [bill.bill_id for bill in client.iter_updated_bills(SINCE, UNTIL)]
+
+    assert ids == ["119-hr-6417", "119-s-1972", "119-hr-10233"]  # each exactly once
+    assert route.call_count == 4
+    # the second pass uses a different page size so the boundaries move
+    limits = [c.request.url.params["limit"] for c in route.calls]
+    assert limits == ["250", "250", "230", "230"]
+    assert (
+        REGISTRY.get_sample_value("govwatch_api_paging_repasses_total", {"source": "congress"})
+        == before + 1
+    )
+
+
+@respx.mock
+def test_gives_up_re_paging_after_max_passes(client):
+    a, _, _ = _raw_bills()
+    route = respx.get(f"{BASE_URL}bill").mock(
+        return_value=listing("congress_bills_page2.json", 5, bills=[a])
+    )
+    assert len(list(client.iter_updated_bills(SINCE, UNTIL))) == 1
+    assert route.call_count == MAX_PASSES
