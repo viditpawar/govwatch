@@ -4,15 +4,19 @@ from datetime import UTC, datetime, timedelta
 from itertools import islice
 
 from govwatch import db
-from govwatch.config import get_settings
+from govwatch.config import Settings, get_settings
 from govwatch.sources.congress import CongressClient
+from govwatch.sources.regulations import RegulationsClient
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="govwatch")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("migrate", help="apply pending database migrations")
-    peek = sub.add_parser("peek-bills", help="print recently updated bills (no db writes)")
+    peek = sub.add_parser(
+        "peek", help="print recently updated records from a source (no db writes)"
+    )
+    peek.add_argument("source", choices=["congress", "regulations"])
     peek.add_argument("--days", type=int, default=1)
     peek.add_argument("--limit", type=int, default=10)
     args = parser.parse_args()
@@ -28,17 +32,34 @@ def main() -> None:
     if args.command == "migrate":
         with db.connect(settings.database_url) as conn:
             db.migrate(conn)
-    elif args.command == "peek-bills":
-        until = datetime.now(UTC)
-        since = until - timedelta(days=args.days)
-        key = settings.congress_api_key.get_secret_value()
-        with CongressClient(key) as client:
-            for bill in islice(client.iter_updated_bills(since, until), args.limit):
-                print(f"{bill.bill_id:<16} {bill.source_updated_at:%Y-%m-%d}  {bill.title[:80]}")
-            print(
-                f"\n{client.api.requests_made} request(s), "
-                f"rate limit remaining: {client.api.ratelimit_remaining}"
-            )
+    elif args.command == "peek":
+        peek_source(settings, args.source, args.days, args.limit)
+
+
+def peek_source(settings: Settings, source: str, days: int, limit: int) -> None:
+    until = datetime.now(UTC)
+    since = until - timedelta(days=days)
+
+    if source == "congress":
+        client = CongressClient(settings.congress_api_key.get_secret_value())
+        rows = (
+            (b.bill_id, b.source_updated_at, b.title)
+            for b in client.iter_updated_bills(since, until)
+        )
+    else:
+        client = RegulationsClient(settings.regulations_api_key.get_secret_value())
+        rows = (
+            (d.document_id, d.source_updated_at, d.title or "")
+            for d in client.iter_updated_documents(since, until)
+        )
+
+    with client:
+        for record_id, updated, title in islice(rows, limit):
+            print(f"{record_id:<32} {updated:%Y-%m-%d %H:%M}  {title[:70]}")
+        print(
+            f"\n{client.api.requests_made} request(s), "
+            f"rate limit remaining: {client.api.ratelimit_remaining}"
+        )
 
 
 if __name__ == "__main__":

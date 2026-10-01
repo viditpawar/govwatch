@@ -11,6 +11,8 @@ dependencies = [
     "pydantic>=2.8",
     "pydantic-settings>=2.4",
     "prometheus-client>=0.20",
+    # zoneinfo needs this on windows and in slim containers
+    "tzdata>=2024.1",
 ]
 
 [project.scripts]

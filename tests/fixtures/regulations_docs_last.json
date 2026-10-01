@@ -1,0 +1,43 @@
+{
+  "data": [
+    {
+      "type": "documents",
+      "id": "EPA-R06-OAR-2026-1323-0007",
+      "attributes": {
+        "agencyId": "EPA",
+        "objectId": "09000064b95dea93",
+        "frDocNum": null,
+        "documentType": "Supporting & Related Material",
+        "withdrawn": false,
+        "highlightedContent": "",
+        "commentEndDate": null,
+        "commentStartDate": null,
+        "lastModifiedDate": "2026-09-29T04:01:32Z",
+        "openForComment": false,
+        "withinCommentPeriod": false,
+        "postedDate": "2026-09-28T04:00:00Z",
+        "title": "07. Administrative Index Records",
+        "docketId": "EPA-R06-OAR-2026-1323",
+        "subtype": null,
+        "allowLateComments": false
+      }
+    }
+  ],
+  "meta": {
+    "filters": {
+      "lastModifiedDate": {
+        "fromDate": "2026-09-29 00:01:30",
+        "toDate": "2026-09-29 00:01:45"
+      }
+    },
+    "hasNextPage": false,
+    "hasPreviousPage": false,
+    "numberOfElements": 1,
+    "pageNumber": 1,
+    "pageSize": 5,
+    "totalElements": 1,
+    "totalPages": 1,
+    "firstPage": true,
+    "lastPage": true
+  }
+}
