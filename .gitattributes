@@ -1,0 +1,3 @@
+# keep LF everywhere so shell scripts and yaml behave the same in containers
+* text=auto eol=lf
+*.png binary
