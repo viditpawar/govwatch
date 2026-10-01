@@ -28,7 +28,9 @@ def test_api_client_records_requests_retries_and_ratelimit():
         side_effect=[
             httpx.Response(503),
             httpx.ConnectError("nope"),
-            httpx.Response(200, json={}, headers={"X-Ratelimit-Remaining": "42"}),
+            httpx.Response(
+                200, json={}, headers={"X-Ratelimit-Remaining": "42", "X-Ratelimit-Limit": "1000"}
+            ),
         ]
     )
     api.get_json("thing", {})
@@ -41,6 +43,7 @@ def test_api_client_records_requests_retries_and_ratelimit():
     assert sample("govwatch_api_retries_total", reason="ConnectError", **labels) == 1
     assert sample("govwatch_api_request_duration_seconds_count", **labels) == 3
     assert sample("govwatch_api_ratelimit_remaining", **labels) == 42
+    assert sample("govwatch_api_ratelimit_limit", **labels) == 1000
 
 
 def test_record_run():

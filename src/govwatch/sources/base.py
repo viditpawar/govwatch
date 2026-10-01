@@ -110,6 +110,9 @@ class ApiClient:
         if value and value.isdigit():
             self.ratelimit_remaining = int(value)
             metrics.RATELIMIT_REMAINING.labels(self.source).set(self.ratelimit_remaining)
+        limit = resp.headers.get("X-Ratelimit-Limit")
+        if limit and limit.isdigit():
+            metrics.RATELIMIT_LIMIT.labels(self.source).set(int(limit))
 
 
 def content_hash(fields: dict[str, Any]) -> str:

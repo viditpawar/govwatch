@@ -79,6 +79,11 @@ RATELIMIT_REMAINING = Gauge(
     "Requests left in the current window, as reported by api.data.gov",
     ["source"],
 )
+RATELIMIT_LIMIT = Gauge(
+    "govwatch_api_ratelimit_limit",
+    "Size of the rate limit window, as reported by api.data.gov",
+    ["source"],
+)
 
 # --- worker --------------------------------------------------------------------
 
