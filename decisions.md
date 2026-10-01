@@ -46,6 +46,10 @@ entry stays and is marked superseded, so the reasoning history is kept.
 | 38 | [The LLM summarizes and tags; code determines facts](#38-the-llm-summarizes-and-tags-code-determines-facts) | Agent |
 | 39 | [Schema-constrained decoding over a fixed CRS vocabulary](#39-schema-constrained-decoding-over-a-fixed-crs-vocabulary) | Agent |
 | 40 | [Summaries are grounded in source text, never a title alone](#40-summaries-are-grounded-in-source-text-never-a-title-alone) | Agent |
+| 41 | [The official policy area is the fact; the model's pick is a shadow check](#41-the-official-policy-area-is-the-fact-the-models-pick-is-a-shadow-check) | Agent |
+| 42 | [One retry with feedback, then a human; never drop a bill](#42-one-retry-with-feedback-then-a-human-never-drop-a-bill) | Agent |
+| 43 | [Stage rules are chamber-aware](#43-stage-rules-are-chamber-aware) | Agent |
+| 44 | [What gets summarized, and when](#44-what-gets-summarized-and-when) | Agent |
 
 ---
 
@@ -678,4 +682,89 @@ reason for #38–#40 and for the human review step.
   authoritative.
 - The validation gate will also flag summaries that mention specifics (dollar amounts,
   agencies, dates) that don't appear in the source text.
+
+## 41. The official policy area is the fact; the model's pick is a shadow check
+
+**Date:** 2026-09-30 · **Status:** accepted
+
+**Decision:**
+- The stored policy area is always the one congress.gov assigns.
+- The model still picks one (schema-constrained, #39). Its pick is recorded and compared
+  with the official area, but never shown as the answer.
+
+**Why:**
+- In a sample of 20 recently changed bills, 20/20 already had an official policy area. By
+  #38's rule, that makes it a fact, not something to generate.
+- Keeping the model's prediction costs nothing extra (it's the same call as the summary) and
+  gives a free, continuous accuracy signal against ground truth:
+  `govwatch_agent_policy_area_checks_total{result="match|mismatch"}`.
+- A drop in that agreement rate is the drift signal for step 16. It means the model, the
+  prompt or the incoming bills have changed.
+- Baseline from the first live batch: qwen2.5:3b agreed with CRS on 50/86 bills (58%).
+
+## 42. One retry with feedback, then a human; never drop a bill
+
+**Date:** 2026-09-30 · **Status:** accepted
+
+**Decision:**
+- If the validation gate rejects an output, re-prompt once with the rejection reasons added.
+- If the second attempt also fails, store it as `needs_attention`, with its issues, for a
+  person.
+- If the model or the API is down, store nothing, so the bill is picked up on the next run.
+
+**Why:**
+- On the first live batch of 86 summaries: 83 passed first time, 2 were fixed by the retry,
+  and 1 failed twice.
+- A second retry would mostly burn GPU time repeating the same mistake.
+- Keeping rejected outputs, instead of discarding them, means the review queue shows what the
+  model got wrong, which is useful for improving prompts.
+- Every bill ends up in exactly one stored outcome (`pending_review`, `needs_attention` or
+  `stub`), so nothing disappears silently.
+
+**What the one failure taught us:**
+- The model wrote "CDC" where the CRS text spelled out "Centers for Disease Control and
+  Prevention", and the acronym check flagged it as ungrounded. It was a false positive.
+- The check now accepts acronyms that match the initials of a capitalized name in the source,
+  and still catches invented ones (a test covers both).
+- Re-running the fixed gate over all 86 stored summaries: 0 issues.
+
+## 43. Stage rules are chamber-aware
+
+**Date:** 2026-09-30 · **Status:** accepted (refines #38)
+
+**Decision:** When a bill's latest action happens in the other chamber ("Received in the
+Senate" on a House bill, "Message on Senate action sent to the House", "Held at the desk"),
+the stage is at least `passed_one_chamber`.
+
+**Why:**
+- Checked against 60 distinct real latest-action texts, the first version of the rules
+  misread 5. The worst case: a House bill sitting in a Senate committee came out as "reported"
+  when the important fact is that it had already passed the House.
+- All 5 are now test cases, using the real text.
+- Two stages were added beyond the original five:
+  - `reported`: out of committee or on a calendar
+  - `adopted`: simple resolutions, which only need their own chamber
+- It's still coarse, since it's derived from one line of text, not the full action history.
+  If that ever isn't good enough, the next step is reading congress.gov's per-bill actions
+  endpoint.
+
+## 44. What gets summarized, and when
+
+**Date:** 2026-09-30 · **Status:** accepted
+
+**Decision:** A bill is (re)summarized when any of these is true:
+- it has never been summarized
+- its `content_hash` changed since the last summary (#9)
+- its last summary used an older `PROMPT_VERSION` and no human has reviewed it yet
+- its last result was a stub more than 24 hours ago
+
+Newest-changed bills go first, in bounded batches.
+
+**Why:**
+- Tying summaries to the content hash means "re-fetched but unchanged" bills cost nothing.
+- Bumping the prompt version re-summarizes everything automatically, except what a reviewer
+  already approved or rejected. Their work isn't thrown away.
+- Stubs are the common case: 154 of the first 240 bills had no CRS summary yet, because CRS
+  writes them days or weeks after introduction. Re-checking daily picks them up when they
+  appear, at a cost of 2 cheap API calls per check.
 

@@ -213,6 +213,9 @@ GOVWATCH_BACKFILL_DAYS=7             # how far back the very first run goes
 | `GOVWATCH_AUDIT_INTERVAL_SECONDS` | `21600` | How often to run completeness audits |
 | `GOVWATCH_AUDIT_WINDOW_DAYS` | `3` | How many full days back each audit reconciles |
 | `GOVWATCH_AUDIT_AUTO_REPAIR` | `true` | Re-ingest an audit window when records are missing |
+| `GOVWATCH_OLLAMA_URL` | `http://localhost:11434` | Local Ollama for the agent |
+| `GOVWATCH_AGENT_MODEL` | `qwen2.5:3b` | Model the agent uses (see decisions.md #37) |
+| `GOVWATCH_AGENT_BATCH_SIZE` | `10` | Max bills summarized per agent run |
 | `GOVWATCH_METRICS_HOST` / `_PORT` | `0.0.0.0` / `9100` | Bind address for `/metrics` and `/healthz` |
 | `GOVWATCH_LOG_LEVEL` | `INFO` | Python log level |
 
@@ -381,6 +384,7 @@ govwatch migrate                         # apply pending migrations
 govwatch run                             # long-running worker (what the container runs)
 govwatch ingest [--source congress]      # one cycle, non-zero exit on failure
 govwatch audit [--source X] [--repair]   # reconcile upstream counts vs stored, non-zero exit on gaps
+govwatch agent [--limit N] [--bill ID]   # summarize changed bills with the local model (phase 2)
 govwatch peek regulations --days 1       # print recent records from the live API, no db writes
 ```
 
