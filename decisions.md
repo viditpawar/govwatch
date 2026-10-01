@@ -995,6 +995,11 @@ in that batch:
 
 - Even at temperature 0, runs aren't identical (agreement moved between 44% and 52%), so the
   floors leave room for that without letting a real regression through.
+- **The first real run on GitHub** (CPU runner): gate 100%, agreement 52%, source support
+  **0.71**, about 12s per bill. Support came in below my local CPU simulation (0.78), and still
+  clear of the 0.60 floor. The margin was set from local runs, and this is the first
+  measurement from the environment it actually guards, so it's the number to watch if the
+  floor ever needs re-tuning.
 
 **It changed what I thought the model's accuracy was:** live batches had shown 58-74%
 agreement with CRS. On the golden set, deliberately balanced across policy areas, it's 44-52%.

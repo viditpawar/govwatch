@@ -20,6 +20,49 @@ drafting briefs, alerting on new rules) is only as good as the data layer undern
 This project is that layer, built with the same operational rigor as any other platform
 service. Runs entirely on free-tier APIs and local infrastructure.
 
+## Screenshots
+
+All taken from the Terraform-provisioned kind cluster, running against live data.
+
+**Pipeline health:** ingestion lag, freshness, run success, and the lag SLO's error budget.
+
+![Grafana: pipeline health](docs/screenshots/grafana-pipeline.png)
+
+**Agent and human review:** model availability, agreement with official CRS policy areas,
+validation gate failures, the review queue, per-step latency, and how grounded the summaries
+are in their source text.
+
+![Grafana: agent and human review](docs/screenshots/grafana-agent.png)
+
+**Policy activity:** what's actually moving: daily activity, the most active agencies, and
+comment periods about to close, each linked to regulations.gov.
+
+![Grafana: policy activity](docs/screenshots/grafana-policy.png)
+
+**Review queue:** nothing an agent writes reaches an analyst until a person approves it.
+The badges show the shadow check: whether the model's policy area matched the official one.
+
+![Review queue](docs/screenshots/review-queue.png)
+
+**Reviewing one summary:** the agent's summary next to the exact CRS text it was given. The
+stage comes from code, not the model, and the model's policy-area pick is shown separately
+from the official one (here it disagreed).
+
+![Reviewing a summary](docs/screenshots/review-bill.png)
+
+**Alerts:** every alert is unit tested with promtool and links to a runbook section. These
+are the agent's, loaded into Prometheus from the chart's PrometheusRule.
+
+![Prometheus alerts](docs/screenshots/prometheus-alerts.png)
+
+**CI:** every push runs lint, tests, rule tests, kubeconform, Checkov, Trivy, an image
+publish, and a kind e2e with a live completeness audit. Agent changes also run the real
+model over the golden set on GitHub's CPU runners:
+
+![GitHub Actions](docs/screenshots/github-actions.png)
+
+![Model eval results](docs/screenshots/model-eval-summary.png)
+
 ## Architecture
 
 ```mermaid
@@ -219,6 +262,33 @@ GOVWATCH_BACKFILL_DAYS=7             # how far back the very first run goes
 | `GOVWATCH_AGENT_BATCH_SIZE` | `25` | Max bills summarized per agent run |
 | `GOVWATCH_METRICS_HOST` / `_PORT` | `0.0.0.0` / `9100` | Bind address for `/metrics` and `/healthz` |
 | `GOVWATCH_LOG_LEVEL` | `INFO` | Python log level |
+
+## How to demo this
+
+About 10 minutes, starting from a clean machine with Docker, kind, Terraform and Ollama
+(`ollama pull qwen2.5:3b`):
+
+1. **Stand it up:** `cd infra && terraform apply` (about 5 min). One command builds the
+   cluster, both operators, the monitoring stack and the app.
+2. **Show the data layer** (Grafana, http://localhost:30300): lag and freshness, the SLO
+   budget, and the completeness panel. Explain that the auditor reconciles congress.gov's
+   own counts with Postgres, and that it caught two real API problems: a stale CDN count, and
+   bills skipped at page boundaries.
+3. **Show the policy view** further down: comment periods closing soon, linked to
+   regulations.gov. This is what policy staff would look at.
+4. **Show the agent** (review app, http://localhost:30080): open a summary next to its
+   source. Facts come from code, the summary from the model, and nothing ships without a
+   person approving it. Approve one, then reject one with a note.
+5. **Show AgentOps:** the agent section of the dashboard. Point out the grounding panel and
+   the input-vs-output drift split.
+6. **Show the safety net:**
+   - `uv run govwatch eval` runs the golden set (about 30s on a GPU).
+   - The README section on testing the eval: the title-only regression that passed the
+     first version of the eval, and the grounding measure that now catches it.
+7. **Show the receipts:** [decisions.md](decisions.md), 57 decisions with the measurements
+   behind them.
+
+`terraform destroy` removes everything.
 
 ## Quick start
 
@@ -473,11 +543,12 @@ So the real model is evaluated before merge:
 - **Gate cases** are checked on every commit, with no model needed: the real false positives
   (CDC, USDA) and the real catch (an invented FY2020).
 
-| | GPU | CPU (CI) | floor |
-|---|---|---|---|
-| gate pass | 100% | 100% | 85% |
-| policy-area agreement | 44-48% | 52% | 35% |
-| source support (median) | 0.75-0.77 | 0.78 | 0.60 |
+| | GPU (local) | CPU (local simulation) | GitHub runner | floor |
+|---|---|---|---|---|
+| gate pass | 100% | 100% | 100% | 85% |
+| policy-area agreement | 44-48% | 52% | 52% | 35% |
+| source support (median) | 0.75-0.77 | 0.78 | 0.71 | 0.60 |
+| model time per bill | ~1s | ~16s | ~12s | - |
 
 **Testing the eval itself found its biggest gap.** I removed the CRS text from the prompt,
 so the model only saw titles, and the first version of the eval still passed: gate pass
@@ -615,6 +686,20 @@ docker run --rm -v "$PWD/observability:/obs:ro" --entrypoint promtool prom/prome
 - [x] Local LLM agent (Ollama) that summarizes changed bills, grounded in CRS summaries
 - [x] Per-step latency, retry and failure metrics for the agent
 - [x] Output validation gate, drift alerts, and a human review queue
+- [x] Golden-set model eval in CI, with a grounding measure that catches title-only regressions
+- [x] Agent and review app on Kubernetes via the Helm chart and Terraform
+
+**What's next** (each is an open point in [decisions.md](decisions.md)):
+
+- **Stronger faithfulness check.** Source support is lexical (#55). An entailment model or a
+  second model as a judge would also catch fluent paraphrases that drift from the source.
+- **Re-tune the drift thresholds** on a month of real history instead of the first batches (#51).
+- **Run the model in-cluster** on a GPU node pool, with Ollama or vLLM as a Service, instead of
+  the host's Ollama (#56).
+- **Authentication for the review app** behind an identity-aware proxy, with the reviewer taken
+  from the verified identity (#46).
+- **Summaries for regulatory documents too**, so comment periods closing soon come with a
+  plain-language brief.
 
 ## License
 
