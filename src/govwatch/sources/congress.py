@@ -1,4 +1,5 @@
 import logging
+import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -111,7 +112,14 @@ class CongressClient:
             offset += len(records)
 
     def count_updated_bills(self, since: datetime, until: datetime) -> int:
-        """How many bills congress.gov reports as updated in [since, until)."""
+        """How many bills congress.gov reports as updated in [since, until).
+
+        congress.gov is fronted by a CDN that caches by URL for 30 minutes, shared across
+        every API user (the key is a header, so it isn't part of the cache key). Audit
+        windows are midnight-aligned, so the same URL repeats all day and a cached count
+        can disagree with a fresh listing. The extra param gives each call its own URL;
+        the API ignores it. max_age catches it if that ever stops working.
+        """
         data = self.api.get_json(
             "bill",
             {
@@ -119,7 +127,9 @@ class CongressClient:
                 "toDateTime": _fmt(until - timedelta(seconds=1)),
                 "limit": 1,
                 "format": "json",
+                "_nocache": uuid.uuid4().hex,
             },
+            max_age=60,
         )
         return int((data.get("pagination") or {}).get("count") or 0)
 

@@ -152,3 +152,39 @@ def test_count_updated_bills_uses_pagination_count(client):
     assert params["limit"] == "1"
     # window end is exclusive, the API's toDateTime is inclusive
     assert params["toDateTime"] == "2026-09-28T23:59:59Z"
+
+
+@respx.mock
+def test_count_bypasses_the_cdn_cache(client):
+    route = respx.get(f"{BASE_URL}bill").mock(
+        return_value=httpx.Response(200, json=load("congress_bills_page1.json"))
+    )
+    client.count_updated_bills(SINCE, UNTIL)
+    client.count_updated_bills(SINCE, UNTIL)
+
+    first, second = (str(c.request.url) for c in route.calls)
+    assert "_nocache=" in first
+    # same window, different url -> separate cache entries
+    assert first != second
+
+
+@respx.mock
+def test_count_rejects_a_stale_cached_response(client):
+    respx.get(f"{BASE_URL}bill").mock(
+        return_value=httpx.Response(
+            200, json=load("congress_bills_page1.json"), headers={"Age": "965"}
+        )
+    )
+    with pytest.raises(ApiError, match="965s old"):
+        client.count_updated_bills(SINCE, UNTIL)
+
+
+@respx.mock
+def test_listing_ignores_age(client):
+    # paging uses unique toDateTime values, so cache age doesn't matter there
+    respx.get(f"{BASE_URL}bill").mock(
+        return_value=httpx.Response(
+            200, json=load("congress_bills_page2.json"), headers={"Age": "965"}
+        )
+    )
+    assert len(list(client.iter_updated_bills(SINCE, UNTIL))) == 1

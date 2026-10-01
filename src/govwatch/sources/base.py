@@ -52,7 +52,11 @@ class ApiClient:
         self.requests_made = 0
         self.ratelimit_remaining: int | None = None
 
-    def get_json(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
+    def get_json(
+        self, path: str, params: dict[str, Any], max_age: int | None = None
+    ) -> dict[str, Any]:
+        """GET and decode JSON. With max_age, reject responses a cache has held longer
+        than that many seconds (congress.gov sits behind a CDN that caches for 30 min)."""
         for attempt in range(self.max_retries + 1):
             last_try = attempt == self.max_retries
             started = time.perf_counter()
@@ -88,6 +92,9 @@ class ApiClient:
                 continue
             if resp.is_error:
                 raise ApiError(f"{self.source}: {path} returned HTTP {resp.status_code}")
+            age = resp.headers.get("Age", "0")
+            if max_age is not None and age.isdigit() and int(age) > max_age:
+                raise ApiError(f"{self.source}: {path} came from a cache and is {age}s old")
             return resp.json()
 
         raise AssertionError("unreachable")

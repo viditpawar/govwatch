@@ -147,7 +147,8 @@ class RegulationsClient:
         # the filter is inclusive and second-granular, so stop one second short
         params = self._params(since, until - timedelta(seconds=1), page=1)
         params["page[size]"] = 5  # API minimum - we only need meta.totalElements
-        data = self.api.get_json("documents", params)
+        # not cdn-cached today, but fail loudly rather than audit against a stale count
+        data = self.api.get_json("documents", params, max_age=60)
         return int((data.get("meta") or {}).get("totalElements") or 0)
 
     def close(self) -> None:
