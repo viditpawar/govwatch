@@ -10,7 +10,7 @@
   "graphTooltip": 1,
   "refresh": "1m",
   "time": {
-    "from": "now-7d",
+    "from": "now-24h",
     "to": "now"
   },
   "schemaVersion": 41,
