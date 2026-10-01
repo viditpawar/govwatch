@@ -24,7 +24,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # --- runtime: just the venv, non-root -----------------------------------------------
 FROM python:3.12-slim
 
-RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin govwatch
+# pick up debian security fixes that landed after the base image was published
+# (trivy flagged fixable openssl CVEs otherwise)
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin govwatch
 
 COPY --from=build /app/.venv /app/.venv
 
