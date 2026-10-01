@@ -1,5 +1,5 @@
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -148,3 +148,16 @@ def test_skips_malformed(client):
     )
     assert [d.document_id for d in client.iter_updated_documents(SINCE, UNTIL)] == ["A"]
     assert client.malformed == 1
+
+
+@respx.mock
+def test_count_updated_documents_uses_total_elements(client):
+    route = respx.get(DOCS).mock(
+        return_value=httpx.Response(200, json=load("regulations_docs_page1.json"))
+    )
+    assert client.count_updated_documents(SINCE, SINCE + timedelta(days=1)) == 357
+
+    params = route.calls.last.request.url.params
+    assert params["page[size]"] == "5"
+    assert params["filter[lastModifiedDate][ge]"] == "2026-09-29 00:00:00"
+    assert params["filter[lastModifiedDate][le]"] == "2026-09-29 23:59:59"

@@ -112,6 +112,25 @@ def run_ingest(
         conn.execute("SELECT pg_advisory_unlock(hashtext(%s))", (lock_key,))
 
 
+def reingest_window(
+    conn: psycopg.Connection, source: Source, start: datetime, end: datetime
+) -> int:
+    """Re-pull [start, end) and upsert it. Leaves the cursor and run history alone.
+
+    Used to repair gaps the completeness auditor finds. Returns rows new or changed.
+    """
+    changed = 0
+    batch: list[Any] = []
+    for record in source.fetch(start, end):
+        batch.append(record)
+        if len(batch) >= BATCH_SIZE:
+            changed += source.upsert(conn, batch)
+            batch = []
+    if batch:
+        changed += source.upsert(conn, batch)
+    return changed
+
+
 def get_cursor(conn: psycopg.Connection, source: str) -> datetime | None:
     row = conn.execute(
         "SELECT high_watermark FROM sync_cursors WHERE source = %s", (source,)

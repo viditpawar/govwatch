@@ -1,7 +1,7 @@
 import logging
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -141,6 +141,14 @@ class RegulationsClient:
             log.info("regulations: hit page cap, sliding window to %s", last_ts.isoformat())
             window_start = last_ts
             already_seen = last_ts_ids
+
+    def count_updated_documents(self, since: datetime, until: datetime) -> int:
+        """How many documents regulations.gov reports as modified in [since, until)."""
+        # the filter is inclusive and second-granular, so stop one second short
+        params = self._params(since, until - timedelta(seconds=1), page=1)
+        params["page[size]"] = 5  # API minimum - we only need meta.totalElements
+        data = self.api.get_json("documents", params)
+        return int((data.get("meta") or {}).get("totalElements") or 0)
 
     def close(self) -> None:
         self.api.close()

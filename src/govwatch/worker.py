@@ -2,9 +2,10 @@ import logging
 import signal
 import threading
 import time
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from govwatch import db, metrics
+from govwatch.audit import AuditResult, AuditTarget, audit_and_repair, audit_due
 from govwatch.config import Settings
 from govwatch.ingest import RunResult, Source, run_ingest, upsert_bills, upsert_documents
 from govwatch.server import start_server
@@ -39,6 +40,12 @@ class Worker:
                 api=self.regulations.api,
             ),
         ]
+        self.audit_targets = [
+            AuditTarget("congress", "bills", self.congress.count_updated_bills),
+            AuditTarget(
+                "regulations", "regulatory_documents", self.regulations.count_updated_documents
+            ),
+        ]
 
     def run_once(self, only: str | None = None) -> list[RunResult]:
         backfill = timedelta(days=self.settings.backfill_days)
@@ -53,7 +60,32 @@ class Worker:
                 if result:
                     results.append(result)
                 self._refresh_metrics(conn)
+            if not only:
+                self._run_due_audits(conn)
         return results
+
+    def run_audits(self, only: str | None = None, repair: bool = False) -> list[AuditResult]:
+        """Audit every source now, regardless of when they were last audited."""
+        with db.connect(self.settings.database_url, autocommit=True) as conn:
+            return [
+                self._audit(conn, target, repair=repair)
+                for target in self.audit_targets
+                if not only or target.name == only
+            ]
+
+    def _audit(self, conn, target: AuditTarget, repair: bool, now=None) -> AuditResult:
+        source = next(s for s in self.sources if s.name == target.name) if repair else None
+        return audit_and_repair(conn, target, source, self.settings.audit_window_days, now=now)
+
+    def _run_due_audits(self, conn) -> None:
+        interval = timedelta(seconds=self.settings.audit_interval_seconds)
+        now = datetime.now(UTC)
+        for target in self.audit_targets:
+            if self._stop.is_set():
+                return
+            if audit_due(conn, target.name, interval, now):
+                self._audit(conn, target, repair=self.settings.audit_auto_repair, now=now)
+        self._refresh_metrics(conn)
 
     def run_forever(self) -> None:
         signal.signal(signal.SIGTERM, self._handle_signal)

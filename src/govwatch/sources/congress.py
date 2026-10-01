@@ -1,7 +1,7 @@
 import logging
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from govwatch import metrics
@@ -109,6 +109,19 @@ class CongressClient:
             if not records or not (data.get("pagination") or {}).get("next"):
                 return
             offset += len(records)
+
+    def count_updated_bills(self, since: datetime, until: datetime) -> int:
+        """How many bills congress.gov reports as updated in [since, until)."""
+        data = self.api.get_json(
+            "bill",
+            {
+                "fromDateTime": _fmt(since),
+                "toDateTime": _fmt(until - timedelta(seconds=1)),
+                "limit": 1,
+                "format": "json",
+            },
+        )
+        return int((data.get("pagination") or {}).get("count") or 0)
 
     def close(self) -> None:
         self.api.close()

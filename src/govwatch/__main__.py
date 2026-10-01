@@ -23,6 +23,11 @@ def main() -> None:
     sub.add_parser("run", help="run the ingest worker until stopped")
     ingest = sub.add_parser("ingest", help="run a single ingest cycle and exit")
     ingest.add_argument("--source", choices=["congress", "regulations"])
+    audit = sub.add_parser("audit", help="reconcile upstream record counts against the db")
+    audit.add_argument("--source", choices=["congress", "regulations"])
+    audit.add_argument(
+        "--repair", action="store_true", help="re-ingest the window if records are missing"
+    )
     args = parser.parse_args()
 
     settings = get_settings()
@@ -47,6 +52,23 @@ def main() -> None:
         finally:
             worker.close()
         if any(r.status != "success" for r in results):
+            raise SystemExit(1)
+    elif args.command == "audit":
+        worker = Worker(settings)
+        try:
+            audits = worker.run_audits(only=args.source, repair=args.repair)
+        finally:
+            worker.close()
+        for a in audits:
+            if a.status == "ok":
+                print(
+                    f"{a.source:<12} {a.window_start:%Y-%m-%d} -> {a.window_end:%Y-%m-%d}  "
+                    f"upstream {a.upstream_count:>6}  stored {a.local_count:>6}  "
+                    f"missing {a.missing:>4}  ({a.ratio:.2%})"
+                )
+            else:
+                print(f"{a.source:<12} {a.status}: {a.reason}")
+        if any(a.status == "failed" or a.missing for a in audits):
             raise SystemExit(1)
 
 

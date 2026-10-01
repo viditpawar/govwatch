@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     # how far back to go on the very first run, before any cursor exists
     backfill_days: int = Field(default=7, ge=1, le=365)
 
+    # completeness audits: how often, and how many full days back to reconcile
+    audit_interval_seconds: int = Field(default=21600, ge=600)
+    audit_window_days: int = Field(default=3, ge=1, le=30)
+    # re-ingest an audit window automatically when records turn up missing
+    audit_auto_repair: bool = True
+
     # 0.0.0.0 so prometheus can reach it inside a container; use 127.0.0.1 for local dev
     metrics_host: str = "0.0.0.0"
     metrics_port: int = 9100

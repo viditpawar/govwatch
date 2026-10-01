@@ -139,3 +139,16 @@ def test_skips_malformed_records(client):
     bills = list(client.iter_updated_bills(SINCE, UNTIL))
     assert len(bills) == 1
     assert client.malformed == 1
+
+
+@respx.mock
+def test_count_updated_bills_uses_pagination_count(client):
+    route = respx.get(f"{BASE_URL}bill").mock(
+        return_value=httpx.Response(200, json=load("congress_bills_page1.json"))
+    )
+    assert client.count_updated_bills(SINCE, UNTIL) == 284
+
+    params = route.calls.last.request.url.params
+    assert params["limit"] == "1"
+    # window end is exclusive, the API's toDateTime is inclusive
+    assert params["toDateTime"] == "2026-09-28T23:59:59Z"

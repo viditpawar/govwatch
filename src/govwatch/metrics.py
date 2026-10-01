@@ -85,6 +85,37 @@ RATELIMIT_LIMIT = Gauge(
     ["source"],
 )
 
+# --- completeness audits --------------------------------------------------------
+
+AUDITS = Counter(
+    "govwatch_completeness_audits_total", "Completeness audits by outcome", ["source", "status"]
+)
+COMPLETENESS_RATIO = Gauge(
+    "govwatch_completeness_ratio",
+    "Share of the records the source reports for the audit window that are stored",
+    ["source"],
+)
+MISSING_RECORDS = Gauge(
+    "govwatch_completeness_missing_records",
+    "Records the source reports for the audit window that aren't stored",
+    ["source"],
+)
+REPAIRS = Counter(
+    "govwatch_completeness_repairs_total",
+    "Times an audit found missing records and the window was re-ingested",
+    ["source"],
+)
+REPAIRED_RECORDS = Counter(
+    "govwatch_completeness_repaired_records_total",
+    "Records restored by re-ingesting an audit window",
+    ["source"],
+)
+LAST_AUDIT = Gauge(
+    "govwatch_completeness_last_audit_timestamp_seconds",
+    "When the last completed audit for a source ran",
+    ["source"],
+)
+
 # --- worker --------------------------------------------------------------------
 
 HEARTBEAT = Gauge(
@@ -102,6 +133,10 @@ def init_labels() -> None:
         RECORDS_CHANGED.labels(source)
         MALFORMED.labels(source)
         API_LATENCY.labels(source)
+        for status in ("ok", "skipped", "failed"):
+            AUDITS.labels(source, status)
+        REPAIRS.labels(source)
+        REPAIRED_RECORDS.labels(source)
 
 
 def record_run(result: "RunResult") -> None:
@@ -134,3 +169,16 @@ def refresh_from_db(conn: psycopg.Connection) -> None:
             LAST_SUCCESS.labels(source).set(last_success.timestamp())
         if last_run:
             LAST_RUN.labels(source).set(last_run.timestamp())
+
+    audits = conn.execute(
+        """
+        SELECT DISTINCT ON (source) source, upstream_count, local_count, audited_at
+          FROM completeness_audits
+         ORDER BY source, audited_at DESC
+        """
+    ).fetchall()
+    for source, upstream, local, audited_at in audits:
+        missing = max(upstream - local, 0)
+        COMPLETENESS_RATIO.labels(source).set(1.0 if upstream == 0 else 1 - missing / upstream)
+        MISSING_RECORDS.labels(source).set(missing)
+        LAST_AUDIT.labels(source).set(audited_at.timestamp())
