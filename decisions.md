@@ -50,6 +50,11 @@ entry stays and is marked superseded, so the reasoning history is kept.
 | 42 | [One retry with feedback, then a human; never drop a bill](#42-one-retry-with-feedback-then-a-human-never-drop-a-bill) | Agent |
 | 43 | [Stage rules are chamber-aware](#43-stage-rules-are-chamber-aware) | Agent |
 | 44 | [What gets summarized, and when](#44-what-gets-summarized-and-when) | Agent |
+| 45 | [A small server-rendered review app](#45-a-small-server-rendered-review-app) | Review |
+| 46 | [No auth on the review app, so loopback only](#46-no-auth-on-the-review-app-so-loopback-only) | Review |
+| 47 | [Review rules: FIFO, reasons for rejections, no overwrites](#47-review-rules-fifo-reasons-for-rejections-no-overwrites) | Review |
+| 48 | [Store the exact source text the model saw](#48-store-the-exact-source-text-the-model-saw) | Review |
+| 49 | [Fail fast when the model is unavailable](#49-fail-fast-when-the-model-is-unavailable) | Agent |
 
 ---
 
@@ -767,4 +772,100 @@ Newest-changed bills go first, in bounded batches.
 - Stubs are the common case: 154 of the first 240 bills had no CRS summary yet, because CRS
   writes them days or weeks after introduction. Re-checking daily picks them up when they
   appear, at a cost of 2 cheap API calls per check.
+
+## 45. A small server-rendered review app
+
+**Date:** 2026-10-01 · **Status:** accepted
+
+**Decision:** FastAPI with Jinja2 templates and plain HTML forms, with no JavaScript and no
+separate frontend build. It runs as its own process (`govwatch review`) next to the worker.
+
+**Why:**
+- The job is narrow: read a summary next to its source, then approve or reject it. That's
+  two pages and one form.
+- A single-page app would add a build toolchain and an API layer for no gain.
+- Server-rendered templates escape model output by default. Model output is untrusted text,
+  and there's a test that a `<script>` in a summary is rendered as text.
+- It's a separate process from the worker, so the review UI can restart without touching
+  ingestion, and vice versa.
+- It exposes its own `/metrics`, scraped as a separate Prometheus job.
+
+## 46. No auth on the review app, so loopback only
+
+**Date:** 2026-10-01 · **Status:** accepted for local use
+
+**Decision:**
+- The review app has no authentication.
+- `govwatch review` binds to 127.0.0.1 by default, and Compose publishes it only on
+  `127.0.0.1:8080`.
+- Reviewers type their name, and it's stored with each decision.
+
+**Why:**
+- This is a single-user local demo. Building a login system into it would be the wrong kind
+  of work.
+- A shared deployment would put it behind an identity-aware proxy (oauth2-proxy or the
+  cluster's SSO), take the reviewer from the verified identity header instead of a form
+  field, and add CSRF protection.
+- That's where the line is, and it's written down here so nobody mistakes the local setup for
+  a production one.
+
+## 47. Review rules: FIFO, reasons for rejections, no overwrites
+
+**Date:** 2026-10-01 · **Status:** accepted
+
+**Decision:**
+- The queue is oldest first.
+- A rejection requires a note.
+- A decision only applies if the summary is still waiting and is still the newest one for its
+  bill, otherwise it gets a 409.
+- After a decision, the app goes straight to the next item.
+
+**Why:**
+- Oldest first keeps the "oldest waiting" age (the metric step 16 alerts on) honest.
+- A rejection without a reason can't be used to improve the prompt or the gate.
+- The no-overwrite rule is enforced in the `UPDATE ... WHERE` itself, not by reading first and
+  checking. That means two reviewers can't overwrite each other, and a reviewer can't approve
+  text the agent has since replaced. Both cases have tests.
+
+**What the first live session found:** reviewing real output turned up a second gate false
+positive ("USDA" for a source that only says "Department of Agriculture"). The acronym check
+now allows an implied "U.S." prefix, and the case is a test. Of the 2 `needs_attention` items
+in that batch:
+- 1 was that false positive.
+- 1 was a real catch: the model invented "fiscal years 2020 through 2030" when the source
+  only says "through FY2030".
+
+## 48. Store the exact source text the model saw
+
+**Date:** 2026-10-01 · **Status:** accepted
+
+**Decision:** Each summary row stores the CRS text that went into the prompt
+(`source_text`), and the review page shows that stored text, not a fresh fetch.
+
+**Why:**
+- CRS revises summaries. Re-fetching at review time could show the reviewer different text
+  from what the model was given, which makes "is this summary faithful?" impossible to answer.
+- It also makes every summary auditable after the fact, and lets the gate be re-run over
+  stored outputs offline (that's how both false positives were measured).
+- The cost is a few KB per summary.
+
+## 49. Fail fast when the model is unavailable
+
+**Date:** 2026-10-01 · **Status:** accepted (refines #42)
+
+**Decision:**
+- Before a batch touches any bills, check that Ollama answers and has the configured model
+  pulled. If not, stop with one sentence saying how to fix it ("Start the Ollama app",
+  "Run: ollama pull qwen2.5:3b").
+- If Ollama goes away mid-batch, stop the batch. Nothing is stored for the remaining bills, so
+  the next run picks them up.
+- Expected failures (model or API errors) log one line. Tracebacks are kept for actual bugs.
+
+**Why:**
+- The first real run after a reboot, with Ollama not running, printed a full traceback for
+  every bill and worked through all 30, each with retries and backoff. That's slow, and it
+  buries a one-word cause ("not running") under hundreds of lines.
+- A missing dependency isn't a per-bill failure. Treating it like one also inflates the
+  `failed` count, which would make the step 15 failure-rate alerts fire for the wrong reason.
+- #42 still holds for per-bill problems: one bad bill doesn't stop the batch.
 

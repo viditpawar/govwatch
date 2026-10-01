@@ -235,6 +235,7 @@ Prometheus, and Grafana.
 |---|---|
 | Worker metrics | http://localhost:9100/metrics |
 | Worker health | http://localhost:9100/healthz |
+| Review queue | http://localhost:8080 |
 | Prometheus | http://localhost:9090 |
 | Grafana | http://localhost:3001 (anonymous read-only, or `admin` / `admin`) |
 
@@ -385,8 +386,44 @@ govwatch run                             # long-running worker (what the contain
 govwatch ingest [--source congress]      # one cycle, non-zero exit on failure
 govwatch audit [--source X] [--repair]   # reconcile upstream counts vs stored, non-zero exit on gaps
 govwatch agent [--limit N] [--bill ID]   # summarize changed bills with the local model (phase 2)
+govwatch review [--host H] [--port P]    # human review queue on 127.0.0.1:8080 (phase 2)
 govwatch peek regulations --days 1       # print recent records from the live API, no db writes
 ```
+
+## Agent and human review (Phase 2, in progress)
+
+A local model drafts plain-language summaries of changed bills. Nothing reaches an analyst
+until a person has approved it.
+
+```text
+changed bill --> congress.gov context --> code-derived facts --> qwen2.5:3b (schema-constrained)
+     --> validation gate --(fail, retry once with the reasons)--> needs_attention --+
+                         --(pass)--> pending_review ----------------------------+--> human review
+no CRS summary yet --> stub (no model call), re-checked daily
+```
+
+- **Facts come from code, not the model.** The legislative stage is derived from the action
+  text. The policy area is congress.gov's official one, and the model's pick is only a shadow
+  check of its accuracy.
+- **Summaries are grounded in the official CRS summary**, never written from a title alone.
+  A small model given only a title invented a whole policy story.
+- **The validation gate** rejects:
+  - numbers or agency acronyms that aren't in the source
+  - claims that contradict the stage (e.g. "signed into law")
+  - wrong length
+  - meta-text ("based on the provided text")
+- **The review app** (`govwatch review`, port 8080, loopback only) shows each summary next to
+  the exact source text the model saw, with the gate's findings. Rejections need a reason,
+  and stale or already-reviewed items can't be overwritten.
+
+From the first live batches on real bills:
+- About 1.3 s of model time per bill.
+- Most summaries passed the gate first time.
+- The gate caught an invented fiscal year that a reader could easily have repeated.
+- Reviewing real output turned up two gate false positives (`CDC`, `USDA`). Both were fixed
+  and are now tests.
+
+The reasoning for each design choice is in [decisions.md](decisions.md) (#37 onwards).
 
 ## Dashboard
 
