@@ -1,0 +1,150 @@
+# Recording rules + alerts for govwatch. Shared by the compose stack and the k8s
+# PrometheusRule, and unit tested with `promtool test rules` (see ../tests).
+#
+# SLO: the ingest pipeline keeps up 99% of the time over 30 days, where "keeping up"
+# means the last successful run for a source finished less than 30 minutes ago.
+# With the default 15 minute poll interval that tolerates one missed cycle.
+
+groups:
+  - name: govwatch.recording
+    interval: 30s
+    rules:
+      # last_over_time keeps the series alive when the worker disappears, so lag keeps
+      # climbing during an outage instead of vanishing along with the target
+      - record: govwatch:ingest_lag_seconds
+        expr: time() - last_over_time(govwatch_ingest_last_success_timestamp_seconds[7d])
+
+      - record: govwatch:data_staleness_seconds
+        expr: time() - last_over_time(govwatch_source_newest_record_timestamp_seconds[7d])
+
+      - record: govwatch:ratelimit_remaining_ratio
+        expr: govwatch_api_ratelimit_remaining / govwatch_api_ratelimit_limit
+
+      - record: govwatch:api_error_ratio:1h
+        expr: |
+          sum by (source) (increase(govwatch_api_requests_total{code=~"5..|429|error"}[1h]))
+            /
+          sum by (source) (increase(govwatch_api_requests_total[1h]))
+
+      - record: govwatch:sli_lag_good
+        expr: govwatch:ingest_lag_seconds < bool 1800
+
+  - name: govwatch.slo
+    interval: 30s
+    rules:
+      - record: govwatch:slo_lag_error_ratio:5m
+        expr: 1 - avg_over_time(govwatch:sli_lag_good[5m])
+      - record: govwatch:slo_lag_error_ratio:30m
+        expr: 1 - avg_over_time(govwatch:sli_lag_good[30m])
+      - record: govwatch:slo_lag_error_ratio:1h
+        expr: 1 - avg_over_time(govwatch:sli_lag_good[1h])
+      - record: govwatch:slo_lag_error_ratio:6h
+        expr: 1 - avg_over_time(govwatch:sli_lag_good[6h])
+      - record: govwatch:slo_lag_error_ratio:30d
+        expr: 1 - avg_over_time(govwatch:sli_lag_good[30d])
+      # 1 = untouched budget, 0 = spent, negative = SLO breached
+      - record: govwatch:slo_lag_budget_remaining:30d
+        expr: 1 - govwatch:slo_lag_error_ratio:30d / 0.01
+
+  - name: govwatch.alerts
+    rules:
+      - alert: GovwatchWorkerDown
+        expr: up{job="govwatch"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: govwatch worker is not being scraped
+          runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchworkerdown
+
+      - alert: GovwatchWorkerStalled
+        expr: time() - govwatch_worker_heartbeat_timestamp_seconds > 3600
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: govwatch worker loop hasn't completed a cycle in over an hour
+          runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchworkerstalled
+
+      # multi-window burn rate alerts (google SRE workbook, chapter 5)
+      - alert: GovwatchLagBudgetBurnFast
+        expr: |
+          govwatch:slo_lag_error_ratio:1h > (14.4 * 0.01)
+            and
+          govwatch:slo_lag_error_ratio:5m > (14.4 * 0.01)
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.source }} ingest lag is burning the 30d error budget at 14x+"
+          runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchlagbudgetburn
+
+      - alert: GovwatchLagBudgetBurnSlow
+        expr: |
+          govwatch:slo_lag_error_ratio:6h > (6 * 0.01)
+            and
+          govwatch:slo_lag_error_ratio:30m > (6 * 0.01)
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.source }} ingest lag is burning the 30d error budget at 6x+"
+          runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchlagbudgetburn
+
+      - alert: GovwatchIngestFailing
+        expr: increase(govwatch_ingest_runs_total{status="failed"}[1h]) > 2
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.source }} had 3+ failed ingest runs in the last hour"
+          runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchingestfailing
+
+      # agencies publish on weekdays during US business hours (14:00-23:00 UTC is roughly
+      # 9/10am-6/7pm Eastern depending on DST). quiet weekends shouldn't page anyone
+      - alert: GovwatchRegulationsDataStale
+        expr: |
+          govwatch:data_staleness_seconds{source="regulations"} > 4 * 3600
+            and on () (day_of_week() >= 1 and day_of_week() <= 5)
+            and on () (hour() >= 14 and hour() < 23)
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: no new regulations.gov documents in 4h during business hours
+          runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchdatastale
+
+      # congress.gov timestamps are whole days and nothing moves on weekends,
+      # so the threshold has to clear a long weekend. long recesses will trip it, which
+      # is a reasonable thing to look at anyway
+      - alert: GovwatchCongressDataStale
+        expr: govwatch:data_staleness_seconds{source="congress"} > 4 * 86400
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: no congress.gov bill updates in over 4 days
+          runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchdatastale
+
+      - alert: GovwatchUpstreamErrors
+        expr: govwatch:api_error_ratio:1h > 0.2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "over 20% of {{ $labels.source }} API requests are failing"
+          runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchupstreamerrors
+
+      - alert: GovwatchRateLimitLow
+        expr: govwatch:ratelimit_remaining_ratio < 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.source }} has under 10% of its api.data.gov rate limit left"
+          runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchratelimitlow
+
+      - alert: GovwatchMalformedRecords
+        expr: increase(govwatch_ingest_malformed_records_total[1h]) > 0
+        labels:
+          severity: info
+        annotations:
+          summary: "{{ $labels.source }} returned records that couldn't be parsed"
+          runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchmalformedrecords

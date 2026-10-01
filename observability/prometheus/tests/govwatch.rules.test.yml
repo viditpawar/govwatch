@@ -1,0 +1,126 @@
+# run with: promtool test rules observability/prometheus/tests/govwatch.rules.test.yml
+# note: promtool time starts at 1970-01-01 00:00 UTC, which was a Thursday
+
+rule_files:
+  - ../rules/govwatch.rules.yml
+
+evaluation_interval: 30s
+
+tests:
+  - name: worker down pages after 2 minutes
+    interval: 1m
+    input_series:
+      - series: 'up{job="govwatch", instance="worker:9100"}'
+        values: "1 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: GovwatchWorkerDown
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: GovwatchWorkerDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: govwatch
+              instance: worker:9100
+            exp_annotations:
+              summary: govwatch worker is not being scraped
+              runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchworkerdown
+
+  - name: lag keeps growing after the worker disappears
+    interval: 1m
+    input_series:
+      # last success at t=0, then the target vanishes after 10 minutes
+      - series: 'govwatch_ingest_last_success_timestamp_seconds{source="congress"}'
+        values: "0x10"
+    promql_expr_test:
+      - expr: govwatch:ingest_lag_seconds
+        eval_time: 1h
+        exp_samples:
+          - labels: 'govwatch:ingest_lag_seconds{source="congress"}'
+            value: 3600
+
+  - name: three failures in an hour
+    interval: 5m
+    input_series:
+      - series: 'govwatch_ingest_runs_total{source="regulations", status="failed"}'
+        values: "0 1 2 3 3 3"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: GovwatchIngestFailing
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: GovwatchIngestFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              source: regulations
+              status: failed
+            exp_annotations:
+              summary: regulations had 3+ failed ingest runs in the last hour
+              runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchingestfailing
+
+  - name: fast burn fires when the pipeline stops keeping up
+    interval: 1m
+    input_series:
+      # healthy for an hour (last success keeps moving), then stuck at t=60m
+      - series: 'govwatch_ingest_last_success_timestamp_seconds{source="regulations"}'
+        values: "0+60x60 3600x120"
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: GovwatchLagBudgetBurnFast
+        exp_alerts: []
+      # lag crosses 30m at ~90m; needs >14.4% of the last hour (~9 min) bad
+      - eval_time: 105m
+        alertname: GovwatchLagBudgetBurnFast
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              source: regulations
+            exp_annotations:
+              summary: regulations ingest lag is burning the 30d error budget at 14x+
+              runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchlagbudgetburn
+
+  - name: regulations staleness only alerts in weekday business hours
+    interval: 10m
+    input_series:
+      # newest record stuck at t=0 for three days
+      - series: 'govwatch_source_newest_record_timestamp_seconds{source="regulations"}'
+        values: "0x450"
+    alert_rule_test:
+      # thursday 03:00 utc: stale, but outside business hours
+      - eval_time: 3h
+        alertname: GovwatchRegulationsDataStale
+        exp_alerts: []
+      # thursday 16:00 utc: stale and in business hours
+      - eval_time: 16h
+        alertname: GovwatchRegulationsDataStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              source: regulations
+            exp_annotations:
+              summary: no new regulations.gov documents in 4h during business hours
+              runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchdatastale
+      # saturday 16:00 utc: still stale, but nobody publishes on saturday
+      - eval_time: 64h
+        alertname: GovwatchRegulationsDataStale
+        exp_alerts: []
+
+  - name: rate limit headroom
+    interval: 1m
+    input_series:
+      - series: 'govwatch_api_ratelimit_remaining{source="regulations"}'
+        values: "500 200 80 50 40 30 20 10"
+      - series: 'govwatch_api_ratelimit_limit{source="regulations"}'
+        values: "1000x7"
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: GovwatchRateLimitLow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              source: regulations
+            exp_annotations:
+              summary: regulations has under 10% of its api.data.gov rate limit left
+              runbook_url: https://github.com/viditpawar/govwatch/blob/main/docs/runbook.md#govwatchratelimitlow
