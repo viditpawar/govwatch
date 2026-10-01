@@ -78,6 +78,10 @@ jobs:
             --set apiKeys.existingSecret=keys \
             --set database.cnpg.enabled=true \
             --set database.cnpg.grafanaReader.passwordSecret=grafana-reader \
+            --set agent.enabled=true \
+            --set review.enabled=true \
+            --set review.service.type=NodePort \
+            --set review.service.nodePort=30080 \
             --set monitoring.serviceMonitor.enabled=true \
             --set monitoring.prometheusRule.enabled=true \
             --set monitoring.dashboard.enabled=true \
