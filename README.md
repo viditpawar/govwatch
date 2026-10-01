@@ -10,8 +10,9 @@
 A government data ingestion platform. govwatch continuously pulls federal bills from
 **congress.gov** and regulatory documents from **regulations.gov**, normalizes them into
 Postgres, and treats the pipeline like a production service: incremental cursors,
-idempotent upserts, change detection, and Prometheus metrics for ingestion lag, data
-freshness, failure rate, and upstream API health.
+idempotent upserts, change detection, SLO-based alerting, and a **completeness auditor**
+that reconciles every source's own record counts against what's stored and re-ingests
+any gap it finds.
 
 Anything that reasons over legislation and regulations (policy research tools, AI agents
 drafting briefs, alerting on new rules) is only as good as the data layer underneath it.
@@ -53,6 +54,36 @@ Every poll interval (15 min by default), the worker does this for each source:
 4. Advances the cursor **only if the whole run succeeded**, and records the run in `ingest_runs`.
 5. Refreshes lag and freshness gauges from the database, so they're correct even right after a restart.
 
+Every 6 hours it also audits completeness (see below).
+
+## Completeness auditing
+
+Lag and freshness metrics prove the pipeline is *running*. They can't prove it's
+*complete*: a paging bug or an edge case at a window boundary can silently drop records
+while every dashboard stays green.
+
+So govwatch checks against the source of truth:
+
+1. Pick the last 3 full UTC days, but only if the ingest history shows they've been fully covered.
+2. Ask each API how many records changed in that window (one cheap request per source).
+3. Count the same window in Postgres, and record both numbers in `completeness_audits`.
+4. If anything is missing, **re-ingest that window** (without touching the cursor) and audit again.
+
+```text
+$ govwatch audit --repair
+regulations: audit 2026-09-28 -> 2026-10-01: upstream 1286, stored 1261, missing 25 (98.06%)
+regulations: 25 records missing, re-ingesting 2026-09-28T00:00:00+00:00 -> 2026-10-01T00:00:00+00:00
+regulations: audit 2026-09-28 -> 2026-10-01: upstream 1286, stored 1286, missing 0 (100.00%)
+```
+
+Against live data, a 4-day backfill reconciles exactly: 1,060 / 1,060 bills and
+1,286 / 1,286 regulatory documents. That's direct evidence the paging, the Eastern-time
+filters and the window-sliding logic don't lose records.
+
+Repairs are counted (`govwatch_completeness_repairs_total`), and repeated repairs raise
+their own alert. Auto-repair keeps the data correct, but a gap that keeps coming back is
+still a bug, and it shouldn't be hidden by the fix.
+
 ## Features
 
 - Incremental ingestion from congress.gov and regulations.gov with per-source cursors
@@ -68,6 +99,7 @@ Every poll interval (15 min by default), the worker does this for each source:
 - Least-privilege reporting layer: Grafana reads curated SQL views through a role that can't touch raw tables
 - Runbook entry for every alert
 - Multi-stage, non-root Docker image; one-command local stack with Prometheus and Grafana
+- Completeness auditor that reconciles upstream record counts against Postgres and self-heals gaps
 - Tests against recorded real API responses and a real Postgres
 
 ## Design notes
@@ -85,6 +117,7 @@ the design:
 | Offset paging over a list that changes while you read it | Results are sorted oldest-first, so records updated mid-crawl move to the end instead of shifting pages |
 | A crash mid-run | Batches commit independently and the cursor doesn't move, so the next run safely covers the same window |
 | The API key showing up in logs | The key is sent as an `X-Api-Key` header, never as a query parameter |
+| A record re-updated upstream leaves the source's count window before it leaves ours | The auditor only counts a shortfall as missing; extra local rows are expected drift |
 
 ## Tech stack
 
@@ -105,6 +138,7 @@ govwatch/
 │   │   └── regulations.py    # regulations.gov client + window sliding
 │   ├── migrations/           # versioned SQL, applied by `govwatch migrate`
 │   ├── ingest.py             # cursors, locking, batched upserts, run tracking
+│   ├── audit.py              # completeness auditor + self-healing re-ingest
 │   ├── worker.py             # poll loop, signal handling, heartbeat
 │   ├── metrics.py            # every Prometheus metric in one place
 │   ├── server.py             # /metrics and /healthz
@@ -149,6 +183,9 @@ GOVWATCH_BACKFILL_DAYS=7             # how far back the very first run goes
 | `GOVWATCH_DATABASE_URL` | `postgresql://govwatch:govwatch@localhost:5432/govwatch` | Postgres connection string |
 | `GOVWATCH_POLL_INTERVAL_SECONDS` | `900` | Time between ingest cycles |
 | `GOVWATCH_BACKFILL_DAYS` | `7` | Lookback for a source with no cursor yet |
+| `GOVWATCH_AUDIT_INTERVAL_SECONDS` | `21600` | How often to run completeness audits |
+| `GOVWATCH_AUDIT_WINDOW_DAYS` | `3` | How many full days back each audit reconciles |
+| `GOVWATCH_AUDIT_AUTO_REPAIR` | `true` | Re-ingest an audit window when records are missing |
 | `GOVWATCH_METRICS_HOST` / `_PORT` | `0.0.0.0` / `9100` | Bind address for `/metrics` and `/healthz` |
 | `GOVWATCH_LOG_LEVEL` | `INFO` | Python log level |
 
@@ -185,6 +222,7 @@ docker compose exec postgres psql -U govwatch -c \
 govwatch migrate                         # apply pending migrations
 govwatch run                             # long-running worker (what the container runs)
 govwatch ingest [--source congress]      # one cycle, non-zero exit on failure
+govwatch audit [--source X] [--repair]   # reconcile upstream counts vs stored, non-zero exit on gaps
 govwatch peek regulations --days 1       # print recent records from the live API, no db writes
 ```
 
@@ -195,6 +233,8 @@ Grafana opens straight to the govwatch dashboard, which has two sections:
 - **Pipeline health** (Prometheus): ingestion lag, newest-record age, 24h run success rate,
   remaining SLO error budget, runs per hour, records seen vs actually changed, API latency
   p50/p95, responses by status code, and rate-limit headroom.
+- **Data completeness**: completeness per source, missing records, gaps found in the last
+  7 days, and the audit history.
 - **Policy activity** (Postgres): daily document and bill activity, the most active agencies
   over the last 7 days, comment periods closing in the next 14 days (linked to
   regulations.gov), and the latest bill actions (linked to congress.gov).
@@ -219,6 +259,9 @@ the time over 30 days. That's about 7 hours of error budget a month.
 | `GovwatchCongressDataStale` | warning | No congress.gov updates in 4 days (clears a long weekend) |
 | `GovwatchUpstreamErrors` | warning | Over 20% of API requests failing for 15m |
 | `GovwatchRateLimitLow` | warning | Under 10% of the api.data.gov hourly limit left |
+| `GovwatchDataIncomplete` | warning | Last audit found under 99% of the source's records stored |
+| `GovwatchRepeatedRepairs` | warning | Auto-repair needed 2+ times in 24h (something keeps dropping records) |
+| `GovwatchCompletenessAuditStale` | info | No completed audit in 24h |
 | `GovwatchMalformedRecords` | info | A source returned records that couldn't be parsed |
 
 Some details that matter:
@@ -241,6 +284,7 @@ Each alert links to its section in [docs/runbook.md](docs/runbook.md).
 | `regulatory_documents` | One row per regulations.gov document: docket, agency, type, comment period, raw payload |
 | `sync_cursors` | High watermark per source |
 | `ingest_runs` | Audit trail: window, status, records seen/changed, API requests, error |
+| `completeness_audits` | Upstream vs stored counts for each audit window |
 
 `last_changed_at` only moves when the content actually changes. That gives downstream
 consumers (summarizers, tagging agents, alerting) a cheap way to process only what's new.
@@ -260,6 +304,9 @@ consumers (summarizers, tagging agents, alerting) a cheap way to process only wh
 | `govwatch_api_retries_total{source,reason}` | counter | Retry pressure |
 | `govwatch_api_ratelimit_remaining` | gauge | Headroom on api.data.gov rate limits |
 | `govwatch_stored_records` | gauge | Rows stored per source |
+| `govwatch_completeness_ratio` | gauge | Share of the source's records for the audit window that are stored |
+| `govwatch_completeness_missing_records` | gauge | Records the source has that we don't |
+| `govwatch_completeness_repairs_total` | counter | Times a gap was found and the window re-ingested |
 | `govwatch_worker_heartbeat_timestamp_seconds` | gauge | Worker loop liveness |
 
 `/healthz` returns 503 only if the worker loop itself is stuck. A failing upstream API is
@@ -294,7 +341,7 @@ docker run --rm -v "$PWD/observability:/obs:ro" --entrypoint promtool prom/prome
 - [x] Prometheus instrumentation
 - [x] Docker image and local Compose stack
 - [x] Grafana dashboard, SLO burn-rate alerts, runbook
-- [ ] Completeness auditor: reconcile upstream record counts against what's stored
+- [x] Completeness auditor with self-healing re-ingest
 - [ ] Helm chart
 - [ ] Terraform-provisioned kind cluster (cluster, monitoring stack, app)
 - [ ] GitHub Actions: lint, test, Trivy, Checkov, image publish, kind smoke test
